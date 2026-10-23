@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Stealth Sandbox</string>
+    <string name="app_tagline">Stealth Anti-Detection Engine</string>
+    <string name="stealth_active">STEALTH ENGINE: ACTIVE</string>
+    <string name="hardware_profile">PROFIL HARDWARE AKTIF</string>
+    <string name="one_click_reset">1-CLICK RESET (NEW IDENTITY)</string>
+    <string name="clone_application">+ KLONING APLIKASI</string>
+    <string name="hardware_spoofer">HARDWARE SPOOFER</string>
+    <string name="cloned_applications">APLIKASI TERKLONING</string>
+    <string name="no_apps_cloned">Belum ada aplikasi yang dikloning.\nTekan tombol + Kloning Aplikasi untuk memulai.</string>
+</resources>
