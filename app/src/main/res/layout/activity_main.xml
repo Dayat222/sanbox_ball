@@ -35,10 +35,11 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.0.0-beta • sanbox_ball"
-                android:textColor="@color/text_muted"
+                android:text="v1.0.0-beta • Periksa Pembaruan"
+                android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
 
@@ -116,6 +117,63 @@
             android:text="⚡ 1-CLICK RESET (NEW IDENTITY)"
             android:textColor="@color/white"
             android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Update Banner (Shown if update is available) -->
+    <LinearLayout
+        android:id="@+id/layout_update_banner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_card"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_stealth_shield"
+            android:contentDescription="Update Icon" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/txt_update_banner_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Pembaruan Baru Tersedia"
+                android:textColor="@color/stealth_cyan"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/txt_update_banner_sub"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Klik untuk update langsung tanpa instal manual"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_banner_update"
+            android:layout_width="wrap_content"
+            android:layout_height="34dp"
+            android:background="@drawable/bg_button_stealth"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="UPDATE"
+            android:textColor="@color/bg_dark"
+            android:textSize="11sp"
             android:textStyle="bold" />
     </LinearLayout>
 

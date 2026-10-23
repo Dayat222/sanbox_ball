@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_card"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:src="@drawable/ic_stealth_shield"
+            android:contentDescription="Update Icon" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:text="PEMBARUAN TERSEDIA"
+            android:textColor="@color/stealth_cyan"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/txt_update_version"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Versi Baru: v1.0.1 • Versi Anda: v1.0.0"
+        android:textColor="@color/text_primary"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Catatan Perubahan:"
+        android:textColor="@color/text_secondary"
+        android:textSize="11sp" />
+
+    <!-- Release Notes Box -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="90dp"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/bg_card_secondary"
+        android:padding="10dp">
+
+        <TextView
+            android:id="@+id/txt_update_notes"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Peningkatan proteksi anti-ban dan stabilitas kontainer."
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    </ScrollView>
+
+    <!-- Download Progress View (Hidden until download starts) -->
+    <LinearLayout
+        android:id="@+id/layout_download_progress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/txt_download_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Mengunduh pembaruan: 0%"
+            android:textColor="@color/stealth_emerald"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/progress_update_download"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="6dp"
+            android:max="100"
+            android:progress="0"
+            android:progressTint="@color/stealth_cyan" />
+    </LinearLayout>
+
+    <!-- Action Buttons -->
+    <LinearLayout
+        android:id="@+id/layout_update_buttons"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_update_now"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_button_stealth"
+            android:text="UPDATE SEKARANG"
+            android:textColor="@color/bg_dark"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_update_later"
+            android:layout_width="wrap_content"
+            android:layout_height="42dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_card_secondary"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="NANTI"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>
