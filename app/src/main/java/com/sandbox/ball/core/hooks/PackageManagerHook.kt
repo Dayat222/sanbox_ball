@@ -91,4 +91,19 @@ object PackageManagerHook {
         }
         return true
     }
+
+    const val PLAY_STORE_PACKAGE = "com.android.vending"
+
+    /**
+     * Anti-Shadowban feature:
+     * Spoofs the installer source to Google Play Store (com.android.vending).
+     * Prevents games from flagging the installation as untrusted sideload / sandbox.
+     */
+    fun getInstallerPackageName(packageName: String): String {
+        return PLAY_STORE_PACKAGE
+    }
+
+    fun getOriginatingPackageName(): String {
+        return PLAY_STORE_PACKAGE
+    }
 }

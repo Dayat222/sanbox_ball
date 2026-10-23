@@ -26,6 +26,26 @@
             android:textColor="@color/text_muted"
             android:textSize="11sp" />
 
+        <!-- Anti-Shadowban Natural Mode Button -->
+        <Button
+            android:id="@+id/btn_preset_natural"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_badge_active"
+            android:text="🛡️ AKTIFKAN MODE NATURAL (ANTI-SHADOWBAN)"
+            android:textColor="@color/stealth_emerald"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Menyelaraskan GPU &amp; SoC ponsel asli Anda agar tidak masuk antrean cheater pool"
+            android:textColor="@color/text_muted"
+            android:textSize="10sp" />
+
         <!-- Preset Buttons Horizontal -->
         <TextView
             android:layout_width="wrap_content"

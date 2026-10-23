@@ -30,7 +30,7 @@ class ProfileManager(private val context: Context) {
 
     init {
         if (getActiveProfile() == null) {
-            val defaultProfile = ProfileGenerator.generatePreset(ProfileGenerator.DevicePreset.SAMSUNG_S24_ULTRA)
+            val defaultProfile = ProfileGenerator.generateNaturalProfile()
             setActiveProfile(defaultProfile)
             saveProfile(defaultProfile)
         }
@@ -82,7 +82,12 @@ class ProfileManager(private val context: Context) {
      * and re-arms stealth evasion engines.
      */
     fun rotateIdentity(clearSandboxCache: Boolean = true): HardwareProfile {
-        val newProfile = ProfileGenerator.generateRandomProfile("Rotated Identity")
+        val current = getActiveProfile()
+        val newProfile = if (current?.isNaturalMode == true) {
+            ProfileGenerator.generateNaturalProfile()
+        } else {
+            ProfileGenerator.generateRandomProfile("Rotated Identity")
+        }
         setActiveProfile(newProfile)
         saveProfile(newProfile)
 

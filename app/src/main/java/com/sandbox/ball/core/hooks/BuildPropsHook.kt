@@ -10,18 +10,20 @@ object BuildPropsHook {
     private const val TAG = "BuildPropsHook"
 
     fun apply(profile: HardwareProfile) {
-        setStaticField(Build::class.java, "BRAND", profile.brand)
-        setStaticField(Build::class.java, "MODEL", profile.model)
-        setStaticField(Build::class.java, "MANUFACTURER", profile.manufacturer)
-        setStaticField(Build::class.java, "DEVICE", profile.device)
-        setStaticField(Build::class.java, "PRODUCT", profile.product)
-        setStaticField(Build::class.java, "BOARD", profile.board)
-        setStaticField(Build::class.java, "HARDWARE", profile.hardware)
-        setStaticField(Build::class.java, "FINGERPRINT", profile.fingerprint)
+        if (!profile.isNaturalMode) {
+            setStaticField(Build::class.java, "BRAND", profile.brand)
+            setStaticField(Build::class.java, "MODEL", profile.model)
+            setStaticField(Build::class.java, "MANUFACTURER", profile.manufacturer)
+            setStaticField(Build::class.java, "DEVICE", profile.device)
+            setStaticField(Build::class.java, "PRODUCT", profile.product)
+            setStaticField(Build::class.java, "BOARD", profile.board)
+            setStaticField(Build::class.java, "HARDWARE", profile.hardware)
+            setStaticField(Build::class.java, "FINGERPRINT", profile.fingerprint)
+        }
         setStaticField(Build::class.java, "ID", profile.buildId)
         setStaticField(Build::class.java, "SERIAL", profile.serialNumber)
 
-        Log.i(TAG, "Build properties hooked: ${profile.manufacturer} ${profile.model}")
+        Log.i(TAG, "Build properties hooked (NaturalMode: ${profile.isNaturalMode}): ${profile.manufacturer} ${profile.model}")
     }
 
     private fun setStaticField(clazz: Class<*>, fieldName: String, value: Any) {

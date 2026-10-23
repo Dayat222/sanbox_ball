@@ -22,6 +22,7 @@ data class HardwareProfile(
     val imsi: String = "510101234567890",
     val simSerialNumber: String = "89621012345678901234",
     val androidId: String = "4b2e8a109c5d7f3e",
+    val oaid: String = "4b2e8a10-9c5d-7f3e-8a10-4b2e8a109c5d",
     val macAddress: String = "02:A1:B2:C3:D4:E5",
     val bluetoothAddress: String = "02:A1:B2:C3:D4:E6",
     val serialNumber: String = "RFCT30XYZ01",
@@ -33,5 +34,6 @@ data class HardwareProfile(
     val wifiSsid: String = "Fiber_Fast_5G",
     val wifiBssid: String = "A4:2B:B0:12:34:56",
     val fakeIpAddress: String = "192.168.1.188",
+    val isNaturalMode: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 ) : Serializable

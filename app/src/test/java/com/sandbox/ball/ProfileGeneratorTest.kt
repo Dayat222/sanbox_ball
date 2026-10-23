@@ -58,5 +58,10 @@ class ProfileGeneratorTest {
         val rog = ProfileGenerator.generatePreset(ProfileGenerator.DevicePreset.ASUS_ROG_8)
         assertEquals("asus", rog.brand)
         assertEquals("ASUS_AI2401", rog.model)
+
+        val natural = ProfileGenerator.generatePreset(ProfileGenerator.DevicePreset.NATURAL_DEVICE)
+        assertTrue("Natural profile must have isNaturalMode = true", natural.isNaturalMode)
+        assertNotNull("Natural profile must have an OAID", natural.oaid)
+        assertEquals(15, natural.imei.length)
     }
 }

@@ -7,6 +7,7 @@ object ProfileGenerator {
     private val random = SecureRandom()
 
     enum class DevicePreset {
+        NATURAL_DEVICE,
         SAMSUNG_S24_ULTRA,
         GOOGLE_PIXEL_8_PRO,
         XIAOMI_14,
@@ -14,9 +15,68 @@ object ProfileGenerator {
         ONEPLUS_12
     }
 
+    /**
+     * Anti-Shadowban Engine: Natural Profile Generator
+     * Preserves physical SoC, GPU, Board, and Model consistency while rotating
+     * uniquely banned tracking identifiers (IMEI, Android ID, OAID, MAC, Serial).
+     * Prevents game anti-cheat from detecting OpenGL / CPU discrepancies.
+     */
+    fun generateNaturalProfile(): HardwareProfile {
+        val uniqueSuffix = (1000..9999).random()
+        val brand = android.os.Build.BRAND?.takeIf { it.isNotEmpty() } ?: "android"
+        val model = android.os.Build.MODEL?.takeIf { it.isNotEmpty() } ?: "Generic_Device"
+        val manufacturer = android.os.Build.MANUFACTURER?.takeIf { it.isNotEmpty() } ?: "Android"
+        val product = android.os.Build.PRODUCT?.takeIf { it.isNotEmpty() } ?: "generic"
+        val device = android.os.Build.DEVICE?.takeIf { it.isNotEmpty() } ?: "generic"
+        val board = android.os.Build.BOARD?.takeIf { it.isNotEmpty() } ?: "generic"
+        val hardware = android.os.Build.HARDWARE?.takeIf { it.isNotEmpty() } ?: "qcom"
+        val fingerprint = android.os.Build.FINGERPRINT?.takeIf { it.isNotEmpty() }
+            ?: "$brand/$product/$device:14/UP1A.231005.007/$uniqueSuffix:user/release-keys"
+        val buildId = android.os.Build.ID?.takeIf { it.isNotEmpty() } ?: "UP1A.231005.007"
+        val androidVersion = android.os.Build.VERSION.RELEASE?.takeIf { it.isNotEmpty() } ?: "14"
+        val sdkInt = android.os.Build.VERSION.SDK_INT.takeIf { it > 0 } ?: 34
+
+        return HardwareProfile(
+            profileId = UUID.randomUUID().toString(),
+            profileName = "Natural Mode ($model)",
+            brand = brand,
+            model = model,
+            manufacturer = manufacturer,
+            product = product,
+            device = device,
+            board = board,
+            hardware = hardware,
+            fingerprint = fingerprint,
+            buildId = buildId,
+            androidVersion = androidVersion,
+            sdkInt = sdkInt,
+            imei = generateLuhnImei("35"),
+            imei2 = generateLuhnImei("35"),
+            meid = generateRandomNumeric(14),
+            imsi = "51010" + generateRandomNumeric(10),
+            simSerialNumber = "896210" + generateRandomNumeric(14),
+            androidId = generateRandomHex(16),
+            oaid = UUID.randomUUID().toString(),
+            macAddress = generateRandomMac(),
+            bluetoothAddress = generateRandomMac(),
+            serialNumber = "NAT" + generateRandomAlphanumeric(8).uppercase(),
+            phoneNumber = "+6281" + (10000000..99999999).random(),
+            networkOperator = "51010",
+            networkOperatorName = "Telkomsel",
+            simOperator = "51010",
+            simOperatorName = "Telkomsel",
+            wifiSsid = listOf("Home_5G_Fast", "Private_WiFi", "Office_WiFi_5G").random(),
+            wifiBssid = generateRandomMac(),
+            fakeIpAddress = "192.168.1." + (20..240).random(),
+            isNaturalMode = true,
+            createdAt = System.currentTimeMillis()
+        )
+    }
+
     fun generatePreset(preset: DevicePreset): HardwareProfile {
         val uniqueSuffix = (1000..9999).random()
         return when (preset) {
+            DevicePreset.NATURAL_DEVICE -> generateNaturalProfile()
             DevicePreset.SAMSUNG_S24_ULTRA -> HardwareProfile(
                 profileId = UUID.randomUUID().toString(),
                 profileName = "Samsung Galaxy S24 Ultra",

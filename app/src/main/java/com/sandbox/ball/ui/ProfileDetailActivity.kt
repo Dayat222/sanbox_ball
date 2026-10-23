@@ -51,8 +51,18 @@ class ProfileDetailActivity : AppCompatActivity() {
         val btnPresetPixel = findViewById<Button>(R.id.btn_preset_pixel)
         val btnPresetXiaomi = findViewById<Button>(R.id.btn_preset_xiaomi)
         val btnPresetRog = findViewById<Button>(R.id.btn_preset_rog)
+        val btnPresetNatural = findViewById<Button>(R.id.btn_preset_natural)
         val btnRandomize = findViewById<Button>(R.id.btn_randomize_profile)
         val btnSave = findViewById<Button>(R.id.btn_save_profile)
+
+        btnPresetNatural.setOnClickListener {
+            currentProfile = ProfileGenerator.generateNaturalProfile()
+            populateFields(currentProfile)
+            StealthToast.show(
+                this,
+                "Mode Natural Aktif: Identitas diselaraskan dengan hardware fisik ponsel untuk anti-shadowban"
+            )
+        }
 
         btnPresetSamsung.setOnClickListener {
             currentProfile = ProfileGenerator.generatePreset(ProfileGenerator.DevicePreset.SAMSUNG_S24_ULTRA)
