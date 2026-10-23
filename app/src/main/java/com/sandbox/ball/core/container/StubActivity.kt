@@ -2,6 +2,7 @@ package com.sandbox.ball.core.container
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Button
@@ -33,12 +34,13 @@ class StubActivity : Activity() {
 
         val txtStatus = findViewById<TextView>(R.id.txt_container_status)
         val txtDetails = findViewById<TextView>(R.id.txt_container_details)
+        val btnLaunch = findViewById<Button>(R.id.btn_container_launch)
         val btnReset = findViewById<Button>(R.id.btn_container_reset)
         val btnExit = findViewById<Button>(R.id.btn_container_exit)
 
         val activeProfile = ProfileManager.getInstance(this).getActiveProfile()
 
-        txtStatus.text = "SANDBOX CONTAINER RUNNING"
+        txtStatus.text = "SANDBOX CONTAINER ACTIVE"
         txtDetails.text = buildString {
             append("Target Package: ").append(targetPackage).append("\n\n")
             append("[VFS ISOLATION]\n")
@@ -51,11 +53,24 @@ class StubActivity : Activity() {
             append("MAC: ").append(activeProfile?.macAddress).append("\n")
             append("WiFi SSID: ").append(activeProfile?.wifiSsid).append("\n\n")
             append("[ANTI-DETECTION PROTOCOLS]\n")
-            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0\n")
-            append("✓ /proc/self/maps: SANITIZED\n")
+            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0 (Bypass Anti-Cheat)\n")
+            append("✓ /proc/self/maps: SANITIZED (Hidden from Scanners)\n")
             append("✓ /proc/self/status: TracerPid = 0\n")
             append("✓ Dynamic Package Renaming: ACTIVE\n")
             append("✓ App Visibility Hiding: ENGAGED")
+        }
+
+        btnLaunch.setOnClickListener {
+            targetPackage?.let { pkg ->
+                val launchIntent = packageManager.getLaunchIntentForPackage(pkg)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(launchIntent)
+                    StealthToast.show(this, "Membuka aplikasi dengan Tameng Stealth...")
+                } else {
+                    StealthToast.show(this, "Aplikasi $pkg siap di sandbox")
+                }
+            }
         }
 
         btnReset.setOnClickListener {

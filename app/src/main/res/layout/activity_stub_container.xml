@@ -7,15 +7,35 @@
     android:padding="20dp">
 
     <!-- Top Badge -->
-    <TextView
-        android:id="@+id/txt_container_status"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_badge_active"
-        android:text="SANDBOX CONTAINER RUNNING"
-        android:textColor="@color/badge_text"
-        android:textSize="12sp"
-        android:textStyle="bold" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/txt_container_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/bg_badge_active"
+            android:text="SANDBOX CONTAINER ACTIVE"
+            android:textColor="@color/badge_text"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_container_exit"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_card"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="KEMBALI"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp" />
+    </LinearLayout>
 
     <!-- Terminal-like Sandbox Status View -->
     <ScrollView
@@ -32,39 +52,32 @@
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
             android:lineSpacingExtra="4dp"
-            android:text="Initializing stealth hooks..."
+            android:text="Menginisialisasi tameng sandbox..."
             android:textColor="@color/text_primary"
             android:textSize="12sp" />
     </ScrollView>
 
-    <!-- Bottom Actions -->
-    <LinearLayout
+    <!-- Prominent Launch Target App Button -->
+    <Button
+        android:id="@+id/btn_container_launch"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:orientation="horizontal">
+        android:layout_height="48dp"
+        android:layout_marginTop="14dp"
+        android:background="@drawable/bg_button_stealth"
+        android:text="▶ BUKA APLIKASI SEKARANG"
+        android:textColor="@color/bg_dark"
+        android:textSize="13sp"
+        android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/btn_container_reset"
-            android:layout_width="0dp"
-            android:layout_height="44dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_button_danger"
-            android:text="⚡ 1-CLICK RESET"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/btn_container_exit"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginStart="10dp"
-            android:background="@drawable/bg_card"
-            android:paddingStart="20dp"
-            android:paddingEnd="20dp"
-            android:text="EXIT"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp" />
-    </LinearLayout>
+    <!-- 1-Click Reset in Container -->
+    <Button
+        android:id="@+id/btn_container_reset"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/bg_button_danger"
+        android:text="⚡ 1-CLICK RESET (GANTI HWID &amp; CACHE)"
+        android:textColor="@color/white"
+        android:textSize="12sp"
+        android:textStyle="bold" />
 </LinearLayout>
