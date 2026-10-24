@@ -86,6 +86,7 @@ class MainActivity : AppCompatActivity() {
         val btnCloneApp = findViewById<Button>(R.id.btn_open_cloner)
         val btnProfileManager = findViewById<Button>(R.id.btn_open_profile)
         val txtVersionHeader = findViewById<TextView>(R.id.txt_app_version_header)
+        txtVersionHeader.text = "v${BuildConfig.VERSION_NAME} • Periksa Pembaruan"
 
         // Manual check for update when clicking version in header
         txtVersionHeader.setOnClickListener {
