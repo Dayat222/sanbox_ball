@@ -41,4 +41,14 @@ object NativeBridge {
     external fun nativeApplyPltHooks(): Boolean
 
     external fun nativeSetBuildProp(fieldName: String, fieldValue: String): Boolean
+
+    external fun nativeSetSystemProperties(
+        model: String,
+        manufacturer: String,
+        brand: String,
+        device: String,
+        board: String,
+        fingerprint: String,
+        serial: String
+    ): Boolean
 }

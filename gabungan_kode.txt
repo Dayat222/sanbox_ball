@@ -1,10 +1,9 @@
 ﻿================================================================================
 PROJECT: Stealth Sandbox Engine (sanbox_ball)
-VERSION: v1.4.1-release (Crash Guardian, Process Isolation & Anti-Force-Close Stability)
-DATE EXPORTED: 2026-10-24 14:40:33
-TOTAL FILES: 82 tracked files
+VERSION: v1.5.0-release (Anti-Cheat Shadowban Mitigation & Deep Container Evasion)
+DATE EXPORTED: 2026-10-24 20:39:18
+TOTAL FILES: 83 tracked files
 ================================================================================
-
 ================================================================================
 FILE: .github/workflows/build.yml
 ================================================================================
@@ -115,8 +114,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.4.1-release"
+        versionCode = 9
+        versionName = "1.5.0-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -387,6 +386,7 @@ typedef int (*orig_access_t)(const char*, int);
 typedef int (*orig_stat_t)(const char*, struct stat*);
 typedef int (*orig_lstat_t)(const char*, struct stat*);
 typedef long (*orig_ptrace_t)(int, pid_t, void*, void*);
+typedef int (*orig_system_property_get_t)(const char*, char*);
 
 static orig_open_t   g_orig_open   = nullptr;
 static orig_openat_t g_orig_openat = nullptr;
@@ -395,6 +395,99 @@ static orig_access_t g_orig_access = nullptr;
 static orig_stat_t   g_orig_stat   = nullptr;
 static orig_lstat_t  g_orig_lstat  = nullptr;
 static orig_ptrace_t g_orig_ptrace = nullptr;
+static orig_system_property_get_t g_orig_system_property_get = nullptr;
+
+static std::mutex g_sysprop_mutex;
+static std::string g_prop_model;
+static std::string g_prop_manufacturer;
+static std::string g_prop_brand;
+static std::string g_prop_device;
+static std::string g_prop_board;
+static std::string g_prop_fingerprint;
+static std::string g_prop_serial;
+
+void stealth_set_system_properties(
+    const char* model,
+    const char* manufacturer,
+    const char* brand,
+    const char* device,
+    const char* board,
+    const char* fingerprint,
+    const char* serial
+) {
+    std::lock_guard<std::mutex> lock(g_sysprop_mutex);
+    g_prop_model = model ? model : "";
+    g_prop_manufacturer = manufacturer ? manufacturer : "";
+    g_prop_brand = brand ? brand : "";
+    g_prop_device = device ? device : "";
+    g_prop_board = board ? board : "";
+    g_prop_fingerprint = fingerprint ? fingerprint : "";
+    g_prop_serial = serial ? serial : "";
+    ALOGI("Stealth Engine: Native system properties spoofed for model: %s", g_prop_model.c_str());
+}
+
+int hooked_system_property_get(const char* name, char* value) {
+    if (!name || !value) return 0;
+
+    {
+        std::lock_guard<std::mutex> lock(g_sysprop_mutex);
+        if (!g_prop_model.empty()) {
+            if (strcmp(name, "ro.product.model") == 0 ||
+                strcmp(name, "ro.product.vendor.model") == 0 ||
+                strcmp(name, "ro.product.odm.model") == 0) {
+                strncpy(value, g_prop_model.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.manufacturer") == 0 ||
+                strcmp(name, "ro.product.vendor.manufacturer") == 0) {
+                strncpy(value, g_prop_manufacturer.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.brand") == 0 ||
+                strcmp(name, "ro.product.vendor.brand") == 0) {
+                strncpy(value, g_prop_brand.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.device") == 0 ||
+                strcmp(name, "ro.product.vendor.device") == 0) {
+                strncpy(value, g_prop_device.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.board") == 0 ||
+                strcmp(name, "ro.board.platform") == 0) {
+                strncpy(value, g_prop_board.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.build.fingerprint") == 0 ||
+                strcmp(name, "ro.vendor.build.fingerprint") == 0) {
+                strncpy(value, g_prop_fingerprint.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.serialno") == 0 ||
+                strcmp(name, "ro.boot.serialno") == 0) {
+                strncpy(value, g_prop_serial.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+        }
+    }
+
+    if (!g_orig_system_property_get) {
+        g_orig_system_property_get = reinterpret_cast<orig_system_property_get_t>(
+            dlsym(RTLD_NEXT, "__system_property_get")
+        );
+    }
+    if (g_orig_system_property_get) {
+        return g_orig_system_property_get(name, value);
+    }
+    return 0;
+}
 
 static std::atomic<int> g_antidebug_enabled{1};
 static std::atomic<int> g_hooks_installed{0};
@@ -584,7 +677,8 @@ static std::vector<PltHookTarget> get_hook_targets() {
         {"stat64", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
         {"lstat", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
         {"lstat64", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
-        {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
+        {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)},
+        {"__system_property_get", reinterpret_cast<void*>(hooked_system_property_get), reinterpret_cast<void**>(&g_orig_system_property_get)}
     };
 }
 
@@ -776,6 +870,7 @@ int stealth_install_hooks() {
         g_orig_stat   = reinterpret_cast<orig_stat_t>(dlsym(libc, "stat"));
         g_orig_lstat  = reinterpret_cast<orig_lstat_t>(dlsym(libc, "lstat"));
         g_orig_ptrace = reinterpret_cast<orig_ptrace_t>(dlsym(libc, "ptrace"));
+        g_orig_system_property_get = reinterpret_cast<orig_system_property_get_t>(dlsym(libc, "__system_property_get"));
     }
 
     // Apply PLT/GOT memory table redirection
@@ -803,6 +898,7 @@ FILE: app/src/main/cpp/hook/syscall_hook.h
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string>
 
 #ifdef __cplusplus
 extern "C" {
@@ -817,6 +913,17 @@ int stealth_apply_plt_hooks();
 void stealth_set_antidebug_enabled(int enabled);
 int stealth_is_antidebug_enabled();
 
+// System property spoofing for native anti-cheat evasion
+void stealth_set_system_properties(
+    const char* model,
+    const char* manufacturer,
+    const char* brand,
+    const char* device,
+    const char* board,
+    const char* fingerprint,
+    const char* serial
+);
+
 // Hooked functions declarations
 int hooked_open(const char* pathname, int flags, ...);
 int hooked_openat(int dirfd, const char* pathname, int flags, ...);
@@ -825,6 +932,7 @@ int hooked_access(const char* pathname, int mode);
 int hooked_stat(const char* pathname, struct stat* statbuf);
 int hooked_lstat(const char* pathname, struct stat* statbuf);
 long hooked_ptrace(int request, pid_t pid, void* addr, void* data);
+int hooked_system_property_get(const char* name, char* value);
 
 #ifdef __cplusplus
 }
@@ -952,6 +1060,26 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
     }
 
     env->SetStaticObjectField(buildClass, fid, fieldValue);
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetSystemProperties(
+        JNIEnv* env, jobject /* thiz */,
+        jstring model, jstring manufacturer, jstring brand,
+        jstring device, jstring board, jstring fingerprint, jstring serial) {
+    std::string sModel = jstringToStdString(env, model);
+    std::string sMfg = jstringToStdString(env, manufacturer);
+    std::string sBrand = jstringToStdString(env, brand);
+    std::string sDevice = jstringToStdString(env, device);
+    std::string sBoard = jstringToStdString(env, board);
+    std::string sFingerprint = jstringToStdString(env, fingerprint);
+    std::string sSerial = jstringToStdString(env, serial);
+
+    stealth_set_system_properties(
+        sModel.c_str(), sMfg.c_str(), sBrand.c_str(),
+        sDevice.c_str(), sBoard.c_str(), sFingerprint.c_str(), sSerial.c_str()
+    );
     return JNI_TRUE;
 }
 
@@ -1101,6 +1229,17 @@ static bool isProcMapsPath(const std::string& path) {
     return false;
 }
 
+/**
+ * Checks specifically whether the target path targets /proc/[pid]/cmdline (v1.5.0).
+ */
+static bool isProcCmdlinePath(const std::string& path) {
+    if (path == "/proc/self/cmdline" || path == "/proc/thread-self/cmdline") return true;
+    if (path.rfind("/proc/", 0) == 0 && path.length() > 14) {
+        return path.compare(path.length() - 8, 8, "/cmdline") == 0;
+    }
+    return false;
+}
+
 VfsCore& VfsCore::getInstance() {
     static VfsCore instance;
     return instance;
@@ -1135,6 +1274,7 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     fakeVersionPath_ = fakeDir + "/version";
     fakeMacPath_ = fakeDir + "/mac_address";
     fakeStatusPath_ = fakeDir + "/proc_status";
+    fakeCmdlinePath_ = fakeDir + "/proc_cmdline";
     sanitizedMapsPath_ = fakeDir + "/proc_maps";
 
     generateSpoofedFiles();
@@ -1145,6 +1285,8 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     exactMappings_["/sys/class/net/wlan0/address"] = fakeMacPath_;
     exactMappings_["/sys/class/net/eth0/address"] = fakeMacPath_;
     exactMappings_["/proc/self/status"] = fakeStatusPath_;
+    exactMappings_["/proc/self/cmdline"] = fakeCmdlinePath_;
+    exactMappings_["/proc/thread-self/cmdline"] = fakeCmdlinePath_;
 
     // Mount namespace & directory mapping:
     // When app requests /data/data/<pkg> or /data/user/0/<pkg>, redirect to container isolated path
@@ -1186,6 +1328,14 @@ std::string VfsCore::resolvePath(const char* originalPath) {
         std::string sanitized = sanitizeMapsFile();
         if (!sanitized.empty()) {
             return sanitized;
+        }
+    }
+
+    // Targeted interception for /proc/[pid]/cmdline (SEC-02 & v1.5.0)
+    if (isProcCmdlinePath(normPath)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!fakeCmdlinePath_.empty()) {
+            return fakeCmdlinePath_;
         }
     }
 
@@ -1240,6 +1390,10 @@ bool VfsCore::shouldRedirect(const char* originalPath) const {
     if (normPath.empty()) return false;
 
     if (mapsFilterEnabled_.load(std::memory_order_acquire) && isProcMapsPath(normPath)) {
+        return true;
+    }
+
+    if (isProcCmdlinePath(normPath)) {
         return true;
     }
 
@@ -1320,6 +1474,14 @@ void VfsCore::generateSpoofedFiles() {
                    << "Gid:\t10000\t10000\t10000\t10000\n";
         statusFile.close();
     }
+
+    // Generate fake /proc/self/cmdline containing targetPkg\0 (v1.5.0)
+    std::ofstream cmdlineFile(fakeCmdlinePath_, std::ios::binary);
+    if (cmdlineFile.is_open()) {
+        std::string cmd = targetPkg_.empty() ? "app_process" : targetPkg_;
+        cmdlineFile.write(cmd.c_str(), cmd.length() + 1);
+        cmdlineFile.close();
+    }
 }
 
 std::string VfsCore::sanitizeMapsFile() {
@@ -1340,13 +1502,64 @@ std::string VfsCore::sanitizeMapsFile() {
     while (std::getline(src, line)) {
         // Strip references to sandbox engine, hooking libs, xposed, frida
         if (line.find("libstealth_engine.so") != std::string::npos ||
-            line.find("com.sandbox.ball") != std::string::npos ||
             line.find("frida") != std::string::npos ||
             line.find("xposed") != std::string::npos ||
             line.find("substrate") != std::string::npos ||
             line.find("dexrepair") != std::string::npos) {
             continue; // Skip sensitive line
         }
+
+        // Rewrite com.sandbox.ball paths to appear as genuine target app paths (v1.5.0)
+        if (!targetPkg_.empty() && line.find("com.sandbox.ball") != std::string::npos) {
+            // Find start of pathname column in /proc/self/maps:
+            // Standard format: <address> <perms> <offset> <dev> <inode>  <pathname>
+            size_t pathPos = std::string::npos;
+            int spaceCount = 0;
+            bool inSpace = false;
+            for (size_t i = 0; i < line.length(); ++i) {
+                if (line[i] == ' ' || line[i] == '\t') {
+                    if (!inSpace) {
+                        spaceCount++;
+                        inSpace = true;
+                    }
+                } else {
+                    if (inSpace && spaceCount >= 5) {
+                        pathPos = i;
+                        break;
+                    }
+                    inSpace = false;
+                }
+            }
+
+            if (pathPos != std::string::npos) {
+                std::string prefix = line.substr(0, pathPos);
+                std::string path = line.substr(pathPos);
+
+                if (path.find(".so") != std::string::npos) {
+                    size_t slash = path.rfind('/');
+                    std::string soName = (slash != std::string::npos) ? path.substr(slash + 1) : "libgame.so";
+                    line = prefix + "/data/data/" + targetPkg_ + "/lib/" + soName;
+                } else if (path.find("base.apk") != std::string::npos || path.find(".apk") != std::string::npos) {
+                    line = prefix + "/data/app/" + targetPkg_ + "-1/base.apk";
+                } else if (path.find(".dex") != std::string::npos || path.find(".odex") != std::string::npos ||
+                           path.find(".vdex") != std::string::npos || path.find(".oat") != std::string::npos) {
+                    line = prefix + "/data/dalvik-cache/" + targetPkg_ + ".dex";
+                } else {
+                    size_t pos = 0;
+                    while ((pos = line.find("com.sandbox.ball", pos)) != std::string::npos) {
+                        line.replace(pos, 16, targetPkg_);
+                        pos += targetPkg_.length();
+                    }
+                }
+            } else {
+                size_t pos = 0;
+                while ((pos = line.find("com.sandbox.ball", pos)) != std::string::npos) {
+                    line.replace(pos, 16, targetPkg_);
+                    pos += targetPkg_.length();
+                }
+            }
+        }
+
         dst << line << "\n";
     }
 
@@ -1427,6 +1640,7 @@ private:
     std::string fakeVersionPath_;
     std::string fakeMacPath_;
     std::string fakeStatusPath_;
+    std::string fakeCmdlinePath_;
     std::string sanitizedMapsPath_;
 };
 
@@ -1613,11 +1827,14 @@ FILE: app/src/main/java/com/sandbox/ball/core/container/ContainerContext.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
+import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.res.AssetManager
 import android.content.res.Resources
+import android.util.Log
 import java.io.File
 
 class ContainerContext(
@@ -1633,9 +1850,19 @@ class ContainerContext(
     private val codeCacheDirFile = File(containerDataDir, "code_cache").apply { mkdirs() }
     private val noBackupDirFile = File(containerDataDir, "no_backup").apply { mkdirs() }
     private val databasesDirFile = File(containerDataDir, "databases").apply { mkdirs() }
+    private val sharedPrefsDirFile = File(containerDataDir, "shared_prefs").apply { mkdirs() }
+
+    // Isolated external storage directory mimicking /storage/emulated/0/Android/data/<pkg>
+    private val externalDataDir = File(containerDataDir, "sdcard/Android/data/$targetPackageName").apply { mkdirs() }
+    private val externalFilesDir = File(externalDataDir, "files").apply { mkdirs() }
+    private val externalCacheDir = File(externalDataDir, "cache").apply { mkdirs() }
 
     private var customResources: Resources? = null
     private var customAssetManager: AssetManager? = null
+
+    val targetApplication: Application by lazy {
+        createTargetApplication()
+    }
 
     init {
         initCustomResources(base)
@@ -1658,10 +1885,28 @@ class ContainerContext(
         }
     }
 
+    private fun createTargetApplication(): Application {
+        return try {
+            val dummyApp = object : Application() {
+                override fun getPackageName(): String = targetPackageName
+                override fun getApplicationContext(): Context = this
+            }
+            val baseField = ContextWrapper::class.java.getDeclaredField("mBase")
+            baseField.isAccessible = true
+            baseField.set(dummyApp, this)
+            dummyApp
+        } catch (_: Exception) {
+            object : Application() {
+                override fun getPackageName(): String = targetPackageName
+                override fun getApplicationContext(): Context = this
+            }
+        }
+    }
+
     override fun getPackageName(): String = targetPackageName
 
-    // FIX-02: Prevent leaking sandbox host identity (com.sandbox.ball) when target app calls getApplicationContext()
-    override fun getApplicationContext(): Context = this
+    // Anti-Shadowban FIX: Return target Application proxy so getApplicationContext() never leaks host com.sandbox.ball
+    override fun getApplicationContext(): Context = targetApplication
 
     override fun getDataDir(): File = containerDataDir
 
@@ -1679,6 +1924,22 @@ class ContainerContext(
 
     override fun getDir(name: String, mode: Int): File {
         return File(containerDataDir, "app_$name").apply { mkdirs() }
+    }
+
+    override fun getExternalFilesDir(type: String?): File {
+        val dir = if (type == null) externalFilesDir else File(externalFilesDir, type)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    override fun getExternalFilesDirs(type: String?): Array<File> {
+        return arrayOf(getExternalFilesDir(type))
+    }
+
+    override fun getExternalCacheDir(): File = externalCacheDir
+
+    override fun getExternalCacheDirs(): Array<File> {
+        return arrayOf(externalCacheDir)
     }
 
     override fun getClassLoader(): ClassLoader = containerClassLoader
@@ -1823,21 +2084,49 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
 
     override fun callActivityOnCreate(activity: Activity?, icicle: Bundle?) {
         if (activity != null && activeContainerContext != null && activity !is StubActivity) {
+            val ctx = activeContainerContext!!
             try {
-                // Inject ContainerContext as mBase on ContextWrapper
+                // 1. Inject ContainerContext as mBase on ContextWrapper
                 val baseField = ContextWrapper::class.java.getDeclaredField("mBase")
                 baseField.isAccessible = true
-                baseField.set(activity, activeContainerContext)
+                baseField.set(activity, ctx)
 
-                // Inject Resources on ContextThemeWrapper if present
+                // 2. Anti-Shadowban FIX: Inject target Application into activity.mApplication
+                // Prevents activity.getApplication() and analytics SDKs from leaking com.sandbox.ball!
+                try {
+                    val appField = Activity::class.java.getDeclaredField("mApplication")
+                    appField.isAccessible = true
+                    appField.set(activity, ctx.targetApplication)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not set mApplication on activity: ${e.message}")
+                }
+
+                // 3. Inject Resources on ContextThemeWrapper if present
                 try {
                     val themeWrapperClass = Class.forName("android.view.ContextThemeWrapper")
                     val resField = themeWrapperClass.getDeclaredField("mResources")
                     resField.isAccessible = true
-                    resField.set(activity, activeContainerContext!!.resources)
+                    resField.set(activity, ctx.resources)
                 } catch (_: Exception) {}
 
-                Log.d(TAG, "ContainerContext injected into ${activity.javaClass.name}")
+                // 4. Sanitize Intent and ComponentName to remove stub wrapper traces
+                val targetPkg = activeTargetPackage
+                if (activity.intent != null && targetPkg != null) {
+                    val realActivity = activity.intent.getStringExtra(EXTRA_REAL_ACTIVITY)
+                    if (!realActivity.isNullOrEmpty()) {
+                        val realComponent = android.content.ComponentName(targetPkg, realActivity)
+                        activity.intent.component = realComponent
+                        activity.intent.removeExtra(EXTRA_REAL_ACTIVITY)
+                        activity.intent.removeExtra(StubActivity.EXTRA_PACKAGE_NAME)
+                        try {
+                            val compField = Activity::class.java.getDeclaredField("mComponent")
+                            compField.isAccessible = true
+                            compField.set(activity, realComponent)
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                Log.d(TAG, "ContainerContext & Target Application injected into ${activity.javaClass.name}")
             } catch (e: Exception) {
                 Log.w(TAG, "Could not inject ContainerContext into activity: ${e.message}")
             }
@@ -2172,6 +2461,7 @@ class VirtualFileSystem(private val context: Context) {
             File(dir, "databases").mkdirs()
             File(dir, "shared_prefs").mkdirs()
             File(dir, "cache").mkdirs()
+            File(dir, "sdcard/Android/data/$packageName").mkdirs()
         }
         return dir
     }
@@ -2179,12 +2469,20 @@ class VirtualFileSystem(private val context: Context) {
     fun registerAppVfs(packageName: String) {
         val appDataDir = getAppDataDir(packageName)
         val appContainerDir = getAppContainerDir(packageName)
+        val externalDataDir = File(appDataDir, "sdcard/Android/data/$packageName").apply { mkdirs() }
 
         if (NativeBridge.isNativeLoaded()) {
             // Map /data/data/<pkg> to our isolated container directory
             NativeBridge.nativeAddPrefixMapping("/data/data/$packageName", appDataDir.absolutePath)
             NativeBridge.nativeAddPrefixMapping("/data/user/0/$packageName", appDataDir.absolutePath)
             NativeBridge.nativeAddPrefixMapping("/data/app/$packageName", appContainerDir.absolutePath)
+
+            // Anti-Shadowban FIX: Isolate external storage tokens (/storage/emulated/0 and /sdcard)
+            NativeBridge.nativeAddPrefixMapping("/storage/emulated/0/Android/data/$packageName", externalDataDir.absolutePath)
+            NativeBridge.nativeAddPrefixMapping("/sdcard/Android/data/$packageName", externalDataDir.absolutePath)
+            NativeBridge.nativeAddPrefixMapping("/storage/emulated/0/Android/media/$packageName", externalDataDir.absolutePath)
+            NativeBridge.nativeAddPrefixMapping("/sdcard/Android/media/$packageName", externalDataDir.absolutePath)
+
             Log.i(TAG, "VFS mappings registered for $packageName -> ${appDataDir.absolutePath}")
         }
     }
@@ -2198,7 +2496,14 @@ class VirtualFileSystem(private val context: Context) {
             File(dataDir, "databases").mkdirs()
             File(dataDir, "shared_prefs").mkdirs()
             File(dataDir, "cache").mkdirs()
+            File(dataDir, "sdcard/Android/data/$packageName").mkdirs()
         }
+
+        // Also clean up compiled dexopt cache for this package
+        try {
+            val dexOptDir = File(context.cacheDir, "dexopt/$packageName")
+            if (dexOptDir.exists()) dexOptDir.deleteRecursively()
+        } catch (_: Exception) {}
     }
 }
 
@@ -2764,6 +3069,15 @@ class HookManager private constructor(private val context: Context) {
                 fakeMac = profile.macAddress,
                 fakeSerial = profile.serialNumber
             )
+            NativeBridge.nativeSetSystemProperties(
+                model = profile.model,
+                manufacturer = profile.manufacturer,
+                brand = profile.brand,
+                device = profile.device,
+                board = profile.board,
+                fingerprint = profile.fingerprint,
+                serial = profile.serialNumber
+            )
             NativeBridge.nativeSetVfsEnabled(true)
             NativeBridge.nativeSetAntiDebugEnabled(true)
             NativeBridge.nativeSetMapsFilterEnabled(true)
@@ -2784,6 +3098,17 @@ class HookManager private constructor(private val context: Context) {
                 fakeMac = profile?.macAddress ?: "02:00:00:00:00:00",
                 fakeSerial = profile?.serialNumber ?: "RFCT8934"
             )
+            if (profile != null) {
+                NativeBridge.nativeSetSystemProperties(
+                    model = profile.model,
+                    manufacturer = profile.manufacturer,
+                    brand = profile.brand,
+                    device = profile.device,
+                    board = profile.board,
+                    fingerprint = profile.fingerprint,
+                    serial = profile.serialNumber
+                )
+            }
             NativeBridge.nativeApplyPltHooks()
         }
     }
@@ -2953,6 +3278,8 @@ object SettingsSecureHook {
         val profile = activeProfile ?: return originalValue
         return when (name) {
             Settings.Secure.ANDROID_ID -> profile.androidId
+            "advertising_id" -> profile.advertisingId
+            "oaid" -> profile.oaid
             "bluetooth_name" -> "${profile.brand.uppercase()} ${profile.model}"
             "device_name" -> profile.model
             else -> originalValue
@@ -2985,6 +3312,8 @@ object SettingsSecureHook {
                             valuesField.set(nameValueCache, map)
                         }
                         map[Settings.Secure.ANDROID_ID] = profile.androidId
+                        map["advertising_id"] = profile.advertisingId
+                        map["oaid"] = profile.oaid
                         map["bluetooth_name"] = "${profile.brand.uppercase()} ${profile.model}"
                         map["device_name"] = profile.model
                         Log.i(TAG, "In-memory Settings.Secure cache hooked with Android ID: ${profile.androidId}")
@@ -3165,6 +3494,16 @@ object NativeBridge {
     external fun nativeApplyPltHooks(): Boolean
 
     external fun nativeSetBuildProp(fieldName: String, fieldValue: String): Boolean
+
+    external fun nativeSetSystemProperties(
+        model: String,
+        manufacturer: String,
+        brand: String,
+        device: String,
+        board: String,
+        fingerprint: String,
+        serial: String
+    ): Boolean
 }
 
 
@@ -3174,6 +3513,7 @@ FILE: app/src/main/java/com/sandbox/ball/core/spoofer/HardwareProfile.kt
 package com.sandbox.ball.core.spoofer
 
 import java.io.Serializable
+import java.util.UUID
 
 data class HardwareProfile(
     val profileId: String = "",
@@ -3196,6 +3536,7 @@ data class HardwareProfile(
     val simSerialNumber: String = "89621012345678901234",
     val androidId: String = "4b2e8a109c5d7f3e",
     val oaid: String = "4b2e8a10-9c5d-7f3e-8a10-4b2e8a109c5d",
+    val advertisingId: String = "4b2e8a10-9c5d-7f3e-8a10-4b2e8a109c5d",
     val macAddress: String = "02:A1:B2:C3:D4:E5",
     val bluetoothAddress: String = "02:A1:B2:C3:D4:E6",
     val serialNumber: String = "RFCT30XYZ01",
@@ -3293,6 +3634,7 @@ object ProfileGenerator {
             simSerialNumber = "896210" + generateRandomNumeric(14),
             androidId = generateRandomHex(16),
             oaid = UUID.randomUUID().toString(),
+            advertisingId = UUID.randomUUID().toString(),
             macAddress = generateRandomMac(),
             bluetoothAddress = generateRandomMac(),
             serialNumber = "NAT" + generateRandomAlphanumeric(8).uppercase(),
@@ -3490,6 +3832,8 @@ object ProfileGenerator {
             imei = generateLuhnImei("35"),
             imei2 = generateLuhnImei("35"),
             androidId = generateRandomHex(16),
+            oaid = UUID.randomUUID().toString(),
+            advertisingId = UUID.randomUUID().toString(),
             macAddress = generateRandomMac(),
             bluetoothAddress = generateRandomMac(),
             serialNumber = "SN" + generateRandomAlphanumeric(10).uppercase(),
@@ -5255,7 +5599,7 @@ FILE: app/src/main/res/layout/activity_main.xml
                 android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.4.1-release • Periksa Pembaruan"
+                android:text="v1.5.0-release • Periksa Pembaruan"
                 android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -6283,6 +6627,119 @@ FILE: app/src/main/res/xml/file_paths.xml
     <cache-path name="updates_cache" path="updates/" />
     <files-path name="updates_files" path="updates/" />
 </paths>
+
+
+================================================================================
+FILE: app/src/test/java/com/sandbox/ball/AntiCheatEvasionTest.kt
+================================================================================
+package com.sandbox.ball
+
+import android.content.ContextWrapper
+import com.sandbox.ball.core.container.ContainerContext
+import com.sandbox.ball.core.container.VirtualFileSystem
+import com.sandbox.ball.core.hooks.SettingsSecureHook
+import com.sandbox.ball.core.spoofer.HardwareProfile
+import com.sandbox.ball.core.spoofer.ProfileGenerator
+import org.junit.Assert.*
+import org.junit.Test
+import java.io.File
+import java.util.UUID
+
+class AntiCheatEvasionTest {
+
+    @Test
+    fun testAdvertisingIdFormat() {
+        val profile = ProfileGenerator.generateRandomProfile()
+        assertNotNull("Advertising ID must not be null", profile.advertisingId)
+        assertTrue("Advertising ID must be valid UUID string",
+            profile.advertisingId.matches(Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")))
+
+        // Test natural profile generation
+        val natural = ProfileGenerator.generateNaturalProfile()
+        assertTrue("Natural profile advertising ID must be valid UUID",
+            natural.advertisingId.matches(Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")))
+    }
+
+    @Test
+    fun testSettingsSecureAdvertisingIdIntercept() {
+        val testUuid = UUID.randomUUID().toString()
+        val profile = HardwareProfile(advertisingId = testUuid, oaid = "test-oaid-1234")
+        SettingsSecureHook.setProfile(profile)
+
+        val interceptedAdvId = SettingsSecureHook.intercept("advertising_id", "real-hw-id")
+        assertEquals("advertising_id must be intercepted and spoofed", testUuid, interceptedAdvId)
+
+        val interceptedOaid = SettingsSecureHook.intercept("oaid", "real-oaid")
+        assertEquals("oaid must be intercepted and spoofed", "test-oaid-1234", interceptedOaid)
+    }
+
+    @Test
+    fun testContainerContextTargetApplicationIdentity() {
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "test_container_${System.currentTimeMillis()}")
+        tempDir.mkdirs()
+        val dummyApk = File(tempDir, "base.apk").apply { createNewFile() }
+
+        try {
+            val dummyBase = object : ContextWrapper(null) {}
+            val targetPkg = "com.miniclip.eightballpool"
+
+            val containerContext = ContainerContext(
+                base = dummyBase,
+                targetPackageName = targetPkg,
+                containerDataDir = tempDir,
+                apkFile = dummyApk,
+                containerClassLoader = AntiCheatEvasionTest::class.java.classLoader ?: ClassLoader.getSystemClassLoader()
+            )
+
+            // Verify package name masking
+            assertEquals("ContainerContext must return target package", targetPkg, containerContext.packageName)
+            assertEquals("targetApplication must return target package name", targetPkg, containerContext.targetApplication.packageName)
+            assertEquals("getApplicationContext() must match targetApplication", containerContext.targetApplication, containerContext.applicationContext)
+
+            // Verify isolated external storage paths
+            val extFiles = containerContext.getExternalFilesDir(null)
+            assertTrue("External files dir must be isolated inside sdcard path",
+                extFiles.absolutePath.contains("sdcard${File.separator}Android${File.separator}data${File.separator}$targetPkg"))
+
+            val extCache = containerContext.externalCacheDir
+            assertTrue("External cache dir must be isolated inside sdcard path",
+                extCache.absolutePath.contains("sdcard${File.separator}Android${File.separator}data${File.separator}$targetPkg"))
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun testExternalStorageResetCleanliness() {
+        val tempBase = File(System.getProperty("java.io.tmpdir"), "test_vfs_clean_${System.currentTimeMillis()}")
+        tempBase.mkdirs()
+        val targetPkg = "com.miniclip.eightballpool"
+
+        try {
+            val dummyBase = object : ContextWrapper(null) {
+                override fun getFilesDir(): File = tempBase
+            }
+            val vfs = VirtualFileSystem(dummyBase)
+
+            val appDataDir = vfs.getAppDataDir(targetPkg)
+            val externalDir = File(appDataDir, "sdcard/Android/data/$targetPkg/files").apply { mkdirs() }
+            val sensitiveTokenFile = File(externalDir, "miniclip_account_token.dat").apply { writeText("secret_banned_id") }
+
+            assertTrue("Token file must exist before reset", sensitiveTokenFile.exists())
+
+            // Execute clearAppData
+            vfs.clearAppData(targetPkg)
+
+            assertFalse("Token file in external storage must be wiped after clearAppData", sensitiveTokenFile.exists())
+            assertTrue("Target app data directory should exist as clean recreated container", appDataDir.exists())
+            val cleanExtDir = File(appDataDir, "sdcard/Android/data/$targetPkg")
+            assertTrue("Clean external directory must exist", cleanExtDir.exists())
+            assertTrue("Sensitive files inside external directory must be wiped", cleanExtDir.listFiles()?.isEmpty() == true)
+        } finally {
+            tempBase.deleteRecursively()
+        }
+    }
+}
 
 
 ================================================================================

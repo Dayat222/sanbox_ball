@@ -63,6 +63,17 @@ static bool isProcMapsPath(const std::string& path) {
     return false;
 }
 
+/**
+ * Checks specifically whether the target path targets /proc/[pid]/cmdline (v1.5.0).
+ */
+static bool isProcCmdlinePath(const std::string& path) {
+    if (path == "/proc/self/cmdline" || path == "/proc/thread-self/cmdline") return true;
+    if (path.rfind("/proc/", 0) == 0 && path.length() > 14) {
+        return path.compare(path.length() - 8, 8, "/cmdline") == 0;
+    }
+    return false;
+}
+
 VfsCore& VfsCore::getInstance() {
     static VfsCore instance;
     return instance;
@@ -97,6 +108,7 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     fakeVersionPath_ = fakeDir + "/version";
     fakeMacPath_ = fakeDir + "/mac_address";
     fakeStatusPath_ = fakeDir + "/proc_status";
+    fakeCmdlinePath_ = fakeDir + "/proc_cmdline";
     sanitizedMapsPath_ = fakeDir + "/proc_maps";
 
     generateSpoofedFiles();
@@ -107,6 +119,8 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     exactMappings_["/sys/class/net/wlan0/address"] = fakeMacPath_;
     exactMappings_["/sys/class/net/eth0/address"] = fakeMacPath_;
     exactMappings_["/proc/self/status"] = fakeStatusPath_;
+    exactMappings_["/proc/self/cmdline"] = fakeCmdlinePath_;
+    exactMappings_["/proc/thread-self/cmdline"] = fakeCmdlinePath_;
 
     // Mount namespace & directory mapping:
     // When app requests /data/data/<pkg> or /data/user/0/<pkg>, redirect to container isolated path
@@ -148,6 +162,14 @@ std::string VfsCore::resolvePath(const char* originalPath) {
         std::string sanitized = sanitizeMapsFile();
         if (!sanitized.empty()) {
             return sanitized;
+        }
+    }
+
+    // Targeted interception for /proc/[pid]/cmdline (SEC-02 & v1.5.0)
+    if (isProcCmdlinePath(normPath)) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!fakeCmdlinePath_.empty()) {
+            return fakeCmdlinePath_;
         }
     }
 
@@ -202,6 +224,10 @@ bool VfsCore::shouldRedirect(const char* originalPath) const {
     if (normPath.empty()) return false;
 
     if (mapsFilterEnabled_.load(std::memory_order_acquire) && isProcMapsPath(normPath)) {
+        return true;
+    }
+
+    if (isProcCmdlinePath(normPath)) {
         return true;
     }
 
@@ -282,6 +308,14 @@ void VfsCore::generateSpoofedFiles() {
                    << "Gid:\t10000\t10000\t10000\t10000\n";
         statusFile.close();
     }
+
+    // Generate fake /proc/self/cmdline containing targetPkg\0 (v1.5.0)
+    std::ofstream cmdlineFile(fakeCmdlinePath_, std::ios::binary);
+    if (cmdlineFile.is_open()) {
+        std::string cmd = targetPkg_.empty() ? "app_process" : targetPkg_;
+        cmdlineFile.write(cmd.c_str(), cmd.length() + 1);
+        cmdlineFile.close();
+    }
 }
 
 std::string VfsCore::sanitizeMapsFile() {
@@ -302,13 +336,64 @@ std::string VfsCore::sanitizeMapsFile() {
     while (std::getline(src, line)) {
         // Strip references to sandbox engine, hooking libs, xposed, frida
         if (line.find("libstealth_engine.so") != std::string::npos ||
-            line.find("com.sandbox.ball") != std::string::npos ||
             line.find("frida") != std::string::npos ||
             line.find("xposed") != std::string::npos ||
             line.find("substrate") != std::string::npos ||
             line.find("dexrepair") != std::string::npos) {
             continue; // Skip sensitive line
         }
+
+        // Rewrite com.sandbox.ball paths to appear as genuine target app paths (v1.5.0)
+        if (!targetPkg_.empty() && line.find("com.sandbox.ball") != std::string::npos) {
+            // Find start of pathname column in /proc/self/maps:
+            // Standard format: <address> <perms> <offset> <dev> <inode>  <pathname>
+            size_t pathPos = std::string::npos;
+            int spaceCount = 0;
+            bool inSpace = false;
+            for (size_t i = 0; i < line.length(); ++i) {
+                if (line[i] == ' ' || line[i] == '\t') {
+                    if (!inSpace) {
+                        spaceCount++;
+                        inSpace = true;
+                    }
+                } else {
+                    if (inSpace && spaceCount >= 5) {
+                        pathPos = i;
+                        break;
+                    }
+                    inSpace = false;
+                }
+            }
+
+            if (pathPos != std::string::npos) {
+                std::string prefix = line.substr(0, pathPos);
+                std::string path = line.substr(pathPos);
+
+                if (path.find(".so") != std::string::npos) {
+                    size_t slash = path.rfind('/');
+                    std::string soName = (slash != std::string::npos) ? path.substr(slash + 1) : "libgame.so";
+                    line = prefix + "/data/data/" + targetPkg_ + "/lib/" + soName;
+                } else if (path.find("base.apk") != std::string::npos || path.find(".apk") != std::string::npos) {
+                    line = prefix + "/data/app/" + targetPkg_ + "-1/base.apk";
+                } else if (path.find(".dex") != std::string::npos || path.find(".odex") != std::string::npos ||
+                           path.find(".vdex") != std::string::npos || path.find(".oat") != std::string::npos) {
+                    line = prefix + "/data/dalvik-cache/" + targetPkg_ + ".dex";
+                } else {
+                    size_t pos = 0;
+                    while ((pos = line.find("com.sandbox.ball", pos)) != std::string::npos) {
+                        line.replace(pos, 16, targetPkg_);
+                        pos += targetPkg_.length();
+                    }
+                }
+            } else {
+                size_t pos = 0;
+                while ((pos = line.find("com.sandbox.ball", pos)) != std::string::npos) {
+                    line.replace(pos, 16, targetPkg_);
+                    pos += targetPkg_.length();
+                }
+            }
+        }
+
         dst << line << "\n";
     }
 

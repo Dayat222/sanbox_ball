@@ -117,4 +117,24 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
     return JNI_TRUE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetSystemProperties(
+        JNIEnv* env, jobject /* thiz */,
+        jstring model, jstring manufacturer, jstring brand,
+        jstring device, jstring board, jstring fingerprint, jstring serial) {
+    std::string sModel = jstringToStdString(env, model);
+    std::string sMfg = jstringToStdString(env, manufacturer);
+    std::string sBrand = jstringToStdString(env, brand);
+    std::string sDevice = jstringToStdString(env, device);
+    std::string sBoard = jstringToStdString(env, board);
+    std::string sFingerprint = jstringToStdString(env, fingerprint);
+    std::string sSerial = jstringToStdString(env, serial);
+
+    stealth_set_system_properties(
+        sModel.c_str(), sMfg.c_str(), sBrand.c_str(),
+        sDevice.c_str(), sBoard.c_str(), sFingerprint.c_str(), sSerial.c_str()
+    );
+    return JNI_TRUE;
+}
+
 } // extern "C"

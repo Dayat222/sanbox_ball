@@ -21,6 +21,8 @@ object SettingsSecureHook {
         val profile = activeProfile ?: return originalValue
         return when (name) {
             Settings.Secure.ANDROID_ID -> profile.androidId
+            "advertising_id" -> profile.advertisingId
+            "oaid" -> profile.oaid
             "bluetooth_name" -> "${profile.brand.uppercase()} ${profile.model}"
             "device_name" -> profile.model
             else -> originalValue
@@ -53,6 +55,8 @@ object SettingsSecureHook {
                             valuesField.set(nameValueCache, map)
                         }
                         map[Settings.Secure.ANDROID_ID] = profile.androidId
+                        map["advertising_id"] = profile.advertisingId
+                        map["oaid"] = profile.oaid
                         map["bluetooth_name"] = "${profile.brand.uppercase()} ${profile.model}"
                         map["device_name"] = profile.model
                         Log.i(TAG, "In-memory Settings.Secure cache hooked with Android ID: ${profile.androidId}")

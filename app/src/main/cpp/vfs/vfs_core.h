@@ -59,6 +59,7 @@ private:
     std::string fakeVersionPath_;
     std::string fakeMacPath_;
     std::string fakeStatusPath_;
+    std::string fakeCmdlinePath_;
     std::string sanitizedMapsPath_;
 };
 

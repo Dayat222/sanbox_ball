@@ -40,6 +40,7 @@ class VirtualFileSystem(private val context: Context) {
             File(dir, "databases").mkdirs()
             File(dir, "shared_prefs").mkdirs()
             File(dir, "cache").mkdirs()
+            File(dir, "sdcard/Android/data/$packageName").mkdirs()
         }
         return dir
     }
@@ -47,12 +48,20 @@ class VirtualFileSystem(private val context: Context) {
     fun registerAppVfs(packageName: String) {
         val appDataDir = getAppDataDir(packageName)
         val appContainerDir = getAppContainerDir(packageName)
+        val externalDataDir = File(appDataDir, "sdcard/Android/data/$packageName").apply { mkdirs() }
 
         if (NativeBridge.isNativeLoaded()) {
             // Map /data/data/<pkg> to our isolated container directory
             NativeBridge.nativeAddPrefixMapping("/data/data/$packageName", appDataDir.absolutePath)
             NativeBridge.nativeAddPrefixMapping("/data/user/0/$packageName", appDataDir.absolutePath)
             NativeBridge.nativeAddPrefixMapping("/data/app/$packageName", appContainerDir.absolutePath)
+
+            // Anti-Shadowban FIX: Isolate external storage tokens (/storage/emulated/0 and /sdcard)
+            NativeBridge.nativeAddPrefixMapping("/storage/emulated/0/Android/data/$packageName", externalDataDir.absolutePath)
+            NativeBridge.nativeAddPrefixMapping("/sdcard/Android/data/$packageName", externalDataDir.absolutePath)
+            NativeBridge.nativeAddPrefixMapping("/storage/emulated/0/Android/media/$packageName", externalDataDir.absolutePath)
+            NativeBridge.nativeAddPrefixMapping("/sdcard/Android/media/$packageName", externalDataDir.absolutePath)
+
             Log.i(TAG, "VFS mappings registered for $packageName -> ${appDataDir.absolutePath}")
         }
     }
@@ -66,6 +75,13 @@ class VirtualFileSystem(private val context: Context) {
             File(dataDir, "databases").mkdirs()
             File(dataDir, "shared_prefs").mkdirs()
             File(dataDir, "cache").mkdirs()
+            File(dataDir, "sdcard/Android/data/$packageName").mkdirs()
         }
+
+        // Also clean up compiled dexopt cache for this package
+        try {
+            val dexOptDir = File(context.cacheDir, "dexopt/$packageName")
+            if (dexOptDir.exists()) dexOptDir.deleteRecursively()
+        } catch (_: Exception) {}
     }
 }

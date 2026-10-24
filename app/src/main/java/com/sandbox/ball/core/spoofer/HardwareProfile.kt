@@ -1,6 +1,7 @@
 package com.sandbox.ball.core.spoofer
 
 import java.io.Serializable
+import java.util.UUID
 
 data class HardwareProfile(
     val profileId: String = "",
@@ -23,6 +24,7 @@ data class HardwareProfile(
     val simSerialNumber: String = "89621012345678901234",
     val androidId: String = "4b2e8a109c5d7f3e",
     val oaid: String = "4b2e8a10-9c5d-7f3e-8a10-4b2e8a109c5d",
+    val advertisingId: String = "4b2e8a10-9c5d-7f3e-8a10-4b2e8a109c5d",
     val macAddress: String = "02:A1:B2:C3:D4:E5",
     val bluetoothAddress: String = "02:A1:B2:C3:D4:E6",
     val serialNumber: String = "RFCT30XYZ01",

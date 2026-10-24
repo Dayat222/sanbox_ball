@@ -24,6 +24,7 @@ typedef int (*orig_access_t)(const char*, int);
 typedef int (*orig_stat_t)(const char*, struct stat*);
 typedef int (*orig_lstat_t)(const char*, struct stat*);
 typedef long (*orig_ptrace_t)(int, pid_t, void*, void*);
+typedef int (*orig_system_property_get_t)(const char*, char*);
 
 static orig_open_t   g_orig_open   = nullptr;
 static orig_openat_t g_orig_openat = nullptr;
@@ -32,6 +33,99 @@ static orig_access_t g_orig_access = nullptr;
 static orig_stat_t   g_orig_stat   = nullptr;
 static orig_lstat_t  g_orig_lstat  = nullptr;
 static orig_ptrace_t g_orig_ptrace = nullptr;
+static orig_system_property_get_t g_orig_system_property_get = nullptr;
+
+static std::mutex g_sysprop_mutex;
+static std::string g_prop_model;
+static std::string g_prop_manufacturer;
+static std::string g_prop_brand;
+static std::string g_prop_device;
+static std::string g_prop_board;
+static std::string g_prop_fingerprint;
+static std::string g_prop_serial;
+
+void stealth_set_system_properties(
+    const char* model,
+    const char* manufacturer,
+    const char* brand,
+    const char* device,
+    const char* board,
+    const char* fingerprint,
+    const char* serial
+) {
+    std::lock_guard<std::mutex> lock(g_sysprop_mutex);
+    g_prop_model = model ? model : "";
+    g_prop_manufacturer = manufacturer ? manufacturer : "";
+    g_prop_brand = brand ? brand : "";
+    g_prop_device = device ? device : "";
+    g_prop_board = board ? board : "";
+    g_prop_fingerprint = fingerprint ? fingerprint : "";
+    g_prop_serial = serial ? serial : "";
+    ALOGI("Stealth Engine: Native system properties spoofed for model: %s", g_prop_model.c_str());
+}
+
+int hooked_system_property_get(const char* name, char* value) {
+    if (!name || !value) return 0;
+
+    {
+        std::lock_guard<std::mutex> lock(g_sysprop_mutex);
+        if (!g_prop_model.empty()) {
+            if (strcmp(name, "ro.product.model") == 0 ||
+                strcmp(name, "ro.product.vendor.model") == 0 ||
+                strcmp(name, "ro.product.odm.model") == 0) {
+                strncpy(value, g_prop_model.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.manufacturer") == 0 ||
+                strcmp(name, "ro.product.vendor.manufacturer") == 0) {
+                strncpy(value, g_prop_manufacturer.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.brand") == 0 ||
+                strcmp(name, "ro.product.vendor.brand") == 0) {
+                strncpy(value, g_prop_brand.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.device") == 0 ||
+                strcmp(name, "ro.product.vendor.device") == 0) {
+                strncpy(value, g_prop_device.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.product.board") == 0 ||
+                strcmp(name, "ro.board.platform") == 0) {
+                strncpy(value, g_prop_board.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.build.fingerprint") == 0 ||
+                strcmp(name, "ro.vendor.build.fingerprint") == 0) {
+                strncpy(value, g_prop_fingerprint.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+            if (strcmp(name, "ro.serialno") == 0 ||
+                strcmp(name, "ro.boot.serialno") == 0) {
+                strncpy(value, g_prop_serial.c_str(), 92);
+                value[91] = '\0';
+                return static_cast<int>(strlen(value));
+            }
+        }
+    }
+
+    if (!g_orig_system_property_get) {
+        g_orig_system_property_get = reinterpret_cast<orig_system_property_get_t>(
+            dlsym(RTLD_NEXT, "__system_property_get")
+        );
+    }
+    if (g_orig_system_property_get) {
+        return g_orig_system_property_get(name, value);
+    }
+    return 0;
+}
 
 static std::atomic<int> g_antidebug_enabled{1};
 static std::atomic<int> g_hooks_installed{0};
@@ -221,7 +315,8 @@ static std::vector<PltHookTarget> get_hook_targets() {
         {"stat64", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
         {"lstat", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
         {"lstat64", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
-        {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
+        {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)},
+        {"__system_property_get", reinterpret_cast<void*>(hooked_system_property_get), reinterpret_cast<void**>(&g_orig_system_property_get)}
     };
 }
 
@@ -413,6 +508,7 @@ int stealth_install_hooks() {
         g_orig_stat   = reinterpret_cast<orig_stat_t>(dlsym(libc, "stat"));
         g_orig_lstat  = reinterpret_cast<orig_lstat_t>(dlsym(libc, "lstat"));
         g_orig_ptrace = reinterpret_cast<orig_ptrace_t>(dlsym(libc, "ptrace"));
+        g_orig_system_property_get = reinterpret_cast<orig_system_property_get_t>(dlsym(libc, "__system_property_get"));
     }
 
     // Apply PLT/GOT memory table redirection

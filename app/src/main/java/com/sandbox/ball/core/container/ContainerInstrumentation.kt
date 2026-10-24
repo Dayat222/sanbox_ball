@@ -119,21 +119,49 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
 
     override fun callActivityOnCreate(activity: Activity?, icicle: Bundle?) {
         if (activity != null && activeContainerContext != null && activity !is StubActivity) {
+            val ctx = activeContainerContext!!
             try {
-                // Inject ContainerContext as mBase on ContextWrapper
+                // 1. Inject ContainerContext as mBase on ContextWrapper
                 val baseField = ContextWrapper::class.java.getDeclaredField("mBase")
                 baseField.isAccessible = true
-                baseField.set(activity, activeContainerContext)
+                baseField.set(activity, ctx)
 
-                // Inject Resources on ContextThemeWrapper if present
+                // 2. Anti-Shadowban FIX: Inject target Application into activity.mApplication
+                // Prevents activity.getApplication() and analytics SDKs from leaking com.sandbox.ball!
+                try {
+                    val appField = Activity::class.java.getDeclaredField("mApplication")
+                    appField.isAccessible = true
+                    appField.set(activity, ctx.targetApplication)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not set mApplication on activity: ${e.message}")
+                }
+
+                // 3. Inject Resources on ContextThemeWrapper if present
                 try {
                     val themeWrapperClass = Class.forName("android.view.ContextThemeWrapper")
                     val resField = themeWrapperClass.getDeclaredField("mResources")
                     resField.isAccessible = true
-                    resField.set(activity, activeContainerContext!!.resources)
+                    resField.set(activity, ctx.resources)
                 } catch (_: Exception) {}
 
-                Log.d(TAG, "ContainerContext injected into ${activity.javaClass.name}")
+                // 4. Sanitize Intent and ComponentName to remove stub wrapper traces
+                val targetPkg = activeTargetPackage
+                if (activity.intent != null && targetPkg != null) {
+                    val realActivity = activity.intent.getStringExtra(EXTRA_REAL_ACTIVITY)
+                    if (!realActivity.isNullOrEmpty()) {
+                        val realComponent = android.content.ComponentName(targetPkg, realActivity)
+                        activity.intent.component = realComponent
+                        activity.intent.removeExtra(EXTRA_REAL_ACTIVITY)
+                        activity.intent.removeExtra(StubActivity.EXTRA_PACKAGE_NAME)
+                        try {
+                            val compField = Activity::class.java.getDeclaredField("mComponent")
+                            compField.isAccessible = true
+                            compField.set(activity, realComponent)
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                Log.d(TAG, "ContainerContext & Target Application injected into ${activity.javaClass.name}")
             } catch (e: Exception) {
                 Log.w(TAG, "Could not inject ContainerContext into activity: ${e.message}")
             }

@@ -39,6 +39,15 @@ class HookManager private constructor(private val context: Context) {
                 fakeMac = profile.macAddress,
                 fakeSerial = profile.serialNumber
             )
+            NativeBridge.nativeSetSystemProperties(
+                model = profile.model,
+                manufacturer = profile.manufacturer,
+                brand = profile.brand,
+                device = profile.device,
+                board = profile.board,
+                fingerprint = profile.fingerprint,
+                serial = profile.serialNumber
+            )
             NativeBridge.nativeSetVfsEnabled(true)
             NativeBridge.nativeSetAntiDebugEnabled(true)
             NativeBridge.nativeSetMapsFilterEnabled(true)
@@ -59,6 +68,17 @@ class HookManager private constructor(private val context: Context) {
                 fakeMac = profile?.macAddress ?: "02:00:00:00:00:00",
                 fakeSerial = profile?.serialNumber ?: "RFCT8934"
             )
+            if (profile != null) {
+                NativeBridge.nativeSetSystemProperties(
+                    model = profile.model,
+                    manufacturer = profile.manufacturer,
+                    brand = profile.brand,
+                    device = profile.device,
+                    board = profile.board,
+                    fingerprint = profile.fingerprint,
+                    serial = profile.serialNumber
+                )
+            }
             NativeBridge.nativeApplyPltHooks()
         }
     }
