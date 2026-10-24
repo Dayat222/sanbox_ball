@@ -7,6 +7,7 @@
 #include <elf.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <atomic>
 #include <cstdarg>
 #include <cerrno>
 #include <cstring>
@@ -32,16 +33,16 @@ static orig_stat_t   g_orig_stat   = nullptr;
 static orig_lstat_t  g_orig_lstat  = nullptr;
 static orig_ptrace_t g_orig_ptrace = nullptr;
 
-static int g_antidebug_enabled = 1;
-static int g_hooks_installed = 0;
+static std::atomic<int> g_antidebug_enabled{1};
+static std::atomic<int> g_hooks_installed{0};
 
 void stealth_set_antidebug_enabled(int enabled) {
-    g_antidebug_enabled = enabled;
+    g_antidebug_enabled.store(enabled, std::memory_order_release);
     ALOGI("Anti-debugger bypass set to: %d", enabled);
 }
 
 int stealth_is_antidebug_enabled() {
-    return g_antidebug_enabled;
+    return g_antidebug_enabled.load(std::memory_order_acquire);
 }
 
 int hooked_open(const char* pathname, int flags, ...) {
@@ -178,7 +179,7 @@ int hooked_lstat(const char* pathname, struct stat* statbuf) {
 
 long hooked_ptrace(int request, pid_t pid, void* addr, void* data) {
     // 0 = PTRACE_TRACEME, 16 = PTRACE_ATTACH
-    if (g_antidebug_enabled) {
+    if (g_antidebug_enabled.load(std::memory_order_acquire)) {
         if (request == 0 /* PTRACE_TRACEME */ || request == 16 /* PTRACE_ATTACH */) {
             ALOGI("Stealth Engine: ptrace(%d, %d) intercepted! Returning fake success (0)", request, pid);
             return 0; // Fake success
@@ -222,6 +223,19 @@ static std::vector<PltHookTarget> get_hook_targets() {
         {"lstat64", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
         {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
     };
+}
+
+static bool is_in_relro(uintptr_t addr, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum) {
+    for (ElfW(Half) i = 0; i < phnum; ++i) {
+        if (phdr[i].p_type == PT_GNU_RELRO) {
+            uintptr_t relro_start = base + phdr[i].p_vaddr;
+            uintptr_t relro_end = relro_start + phdr[i].p_memsz;
+            if (addr >= relro_start && addr < relro_end) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void* data) {
@@ -314,6 +328,11 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                                 reinterpret_cast<char*>(got_entry) + sizeof(void*)
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
+
+                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
+                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                                mprotect(page_start, page_size, PROT_READ);
+                            }
                         }
                     }
                     break;
@@ -342,6 +361,11 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                                 reinterpret_cast<char*>(got_entry) + sizeof(void*)
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
+
+                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
+                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                                mprotect(page_start, page_size, PROT_READ);
+                            }
                         }
                     }
                     break;
@@ -361,7 +385,7 @@ int stealth_apply_plt_hooks() {
 }
 
 int stealth_install_hooks() {
-    if (g_hooks_installed) {
+    if (g_hooks_installed.load(std::memory_order_acquire)) {
         stealth_apply_plt_hooks();
         return 0;
     }
@@ -380,13 +404,13 @@ int stealth_install_hooks() {
     // Apply PLT/GOT memory table redirection
     stealth_apply_plt_hooks();
 
-    g_hooks_installed = 1;
+    g_hooks_installed.store(1, std::memory_order_release);
     ALOGI("Stealth Hook Engine: Libc interception hooks installed.");
     return 0;
 }
 
 int stealth_uninstall_hooks() {
-    g_hooks_installed = 0;
+    g_hooks_installed.store(0, std::memory_order_release);
     ALOGI("Stealth Hook Engine: Libc interception hooks uninstalled.");
     return 0;
 }

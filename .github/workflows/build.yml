@@ -61,7 +61,6 @@ jobs:
         with:
           files: |
             app/build/outputs/apk/release/app-release.apk
-            app/build/outputs/apk/debug/app-debug.apk
           name: Stealth Sandbox Engine ${{ github.ref_name }}
           draft: false
           prerelease: false

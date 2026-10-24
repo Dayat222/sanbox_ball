@@ -1,8 +1,8 @@
 ﻿================================================================================
 PROJECT: Stealth Sandbox Engine (sanbox_ball)
-VERSION: v1.3.0-release (PRD Container Isolation, Dynamic Proxy State Sync & Native Build)
-DATE EXPORTED: 2026-10-24 14:01:21
-TOTAL FILES: 80 tracked files
+VERSION: v1.4.0-release (PRD Security Hardening, Sandbox Escape Mitigation & DevSecOps)
+DATE EXPORTED: 2026-10-24 14:21:54
+TOTAL FILES: 82 tracked files
 ================================================================================
 
 ================================================================================
@@ -71,7 +71,6 @@ jobs:
         with:
           files: |
             app/build/outputs/apk/release/app-release.apk
-            app/build/outputs/apk/debug/app-debug.apk
           name: Stealth Sandbox Engine ${{ github.ref_name }}
           draft: false
           prerelease: false
@@ -116,8 +115,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.3.0-release"
+        versionCode = 7
+        versionName = "1.4.0-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -133,6 +132,18 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val ksPath = System.getenv("KEYSTORE_PATH")
+            if (!ksPath.isNullOrEmpty() && file(ksPath).exists()) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -141,7 +152,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile != null) {
+                releaseSigning
+            } else {
+                signingConfigs.getByName("debug")
+            }
             ndk {
                 debugSymbolLevel = "NONE"
             }
@@ -247,7 +263,8 @@ FILE: app/src/main/AndroidManifest.xml
 
     <application
         android:name=".StealthApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -353,6 +370,7 @@ FILE: app/src/main/cpp/hook/syscall_hook.cpp
 #include <elf.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <atomic>
 #include <cstdarg>
 #include <cerrno>
 #include <cstring>
@@ -378,16 +396,16 @@ static orig_stat_t   g_orig_stat   = nullptr;
 static orig_lstat_t  g_orig_lstat  = nullptr;
 static orig_ptrace_t g_orig_ptrace = nullptr;
 
-static int g_antidebug_enabled = 1;
-static int g_hooks_installed = 0;
+static std::atomic<int> g_antidebug_enabled{1};
+static std::atomic<int> g_hooks_installed{0};
 
 void stealth_set_antidebug_enabled(int enabled) {
-    g_antidebug_enabled = enabled;
+    g_antidebug_enabled.store(enabled, std::memory_order_release);
     ALOGI("Anti-debugger bypass set to: %d", enabled);
 }
 
 int stealth_is_antidebug_enabled() {
-    return g_antidebug_enabled;
+    return g_antidebug_enabled.load(std::memory_order_acquire);
 }
 
 int hooked_open(const char* pathname, int flags, ...) {
@@ -524,7 +542,7 @@ int hooked_lstat(const char* pathname, struct stat* statbuf) {
 
 long hooked_ptrace(int request, pid_t pid, void* addr, void* data) {
     // 0 = PTRACE_TRACEME, 16 = PTRACE_ATTACH
-    if (g_antidebug_enabled) {
+    if (g_antidebug_enabled.load(std::memory_order_acquire)) {
         if (request == 0 /* PTRACE_TRACEME */ || request == 16 /* PTRACE_ATTACH */) {
             ALOGI("Stealth Engine: ptrace(%d, %d) intercepted! Returning fake success (0)", request, pid);
             return 0; // Fake success
@@ -568,6 +586,19 @@ static std::vector<PltHookTarget> get_hook_targets() {
         {"lstat64", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
         {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
     };
+}
+
+static bool is_in_relro(uintptr_t addr, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum) {
+    for (ElfW(Half) i = 0; i < phnum; ++i) {
+        if (phdr[i].p_type == PT_GNU_RELRO) {
+            uintptr_t relro_start = base + phdr[i].p_vaddr;
+            uintptr_t relro_end = relro_start + phdr[i].p_memsz;
+            if (addr >= relro_start && addr < relro_end) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void* data) {
@@ -660,6 +691,11 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                                 reinterpret_cast<char*>(got_entry) + sizeof(void*)
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
+
+                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
+                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                                mprotect(page_start, page_size, PROT_READ);
+                            }
                         }
                     }
                     break;
@@ -688,6 +724,11 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                                 reinterpret_cast<char*>(got_entry) + sizeof(void*)
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
+
+                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
+                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                                mprotect(page_start, page_size, PROT_READ);
+                            }
                         }
                     }
                     break;
@@ -707,7 +748,7 @@ int stealth_apply_plt_hooks() {
 }
 
 int stealth_install_hooks() {
-    if (g_hooks_installed) {
+    if (g_hooks_installed.load(std::memory_order_acquire)) {
         stealth_apply_plt_hooks();
         return 0;
     }
@@ -726,13 +767,13 @@ int stealth_install_hooks() {
     // Apply PLT/GOT memory table redirection
     stealth_apply_plt_hooks();
 
-    g_hooks_installed = 1;
+    g_hooks_installed.store(1, std::memory_order_release);
     ALOGI("Stealth Hook Engine: Libc interception hooks installed.");
     return 0;
 }
 
 int stealth_uninstall_hooks() {
-    g_hooks_installed = 0;
+    g_hooks_installed.store(0, std::memory_order_release);
     ALOGI("Stealth Hook Engine: Libc interception hooks uninstalled.");
     return 0;
 }
@@ -992,6 +1033,7 @@ FILE: app/src/main/cpp/vfs/vfs_core.cpp
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <vector>
 
 namespace stealth {
 namespace vfs {
@@ -1005,6 +1047,44 @@ static void ensureDirectory(const std::string& path) {
         }
     }
     mkdir(path.c_str(), 0755);
+}
+
+/**
+ * Lexically normalizes a path by resolving '.' and '..' segments without requiring file existence.
+ * Prevents Directory Traversal (SEC-02).
+ */
+static std::string normalizeLexicalPath(const std::string& rawPath) {
+    if (rawPath.empty()) return "";
+    bool isAbsolute = (rawPath[0] == '/');
+    std::vector<std::string> parts;
+    std::stringstream ss(rawPath);
+    std::string item;
+    while (std::getline(ss, item, '/')) {
+        if (item.empty() || item == ".") continue;
+        if (item == "..") {
+            if (!parts.empty()) parts.pop_back();
+        } else {
+            parts.push_back(item);
+        }
+    }
+    std::string result = isAbsolute ? "/" : "";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        result += parts[i];
+        if (i + 1 < parts.size()) result += "/";
+    }
+    return result;
+}
+
+/**
+ * Checks specifically whether the target path targets /proc/[pid]/maps.
+ * Avoids false positive interceptions of application files containing '/maps' (SEC-02).
+ */
+static bool isProcMapsPath(const std::string& path) {
+    if (path == "/proc/self/maps" || path == "/proc/thread-self/maps") return true;
+    if (path.rfind("/proc/", 0) == 0 && path.length() > 11) {
+        return path.compare(path.length() - 5, 5, "/maps") == 0;
+    }
+    return false;
 }
 
 VfsCore& VfsCore::getInstance() {
@@ -1024,7 +1104,7 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     std::string fakeDir = virtualRootDir_ + "/fake_sys";
     ensureDirectory(fakeDir);
 
-    // Clean up old temporary proc_maps.* files from previous sessions (FIX-06)
+    // Clean up old temporary proc_maps.* files from previous sessions
     DIR* dir = opendir(fakeDir.c_str());
     if (dir) {
         struct dirent* entry;
@@ -1061,7 +1141,7 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
         prefixMappings_.push_back({"/data/user/0/" + targetPkg_, virtualDataDir});
     }
 
-    enabled_ = true;
+    enabled_.store(true, std::memory_order_release);
     ALOGI("VfsCore initialized successfully for package: %s, root: %s",
           targetPkg_.c_str(), virtualRootDir_.c_str());
 }
@@ -1077,54 +1157,91 @@ void VfsCore::addPrefixMapping(const std::string& virtualPrefix, const std::stri
 }
 
 std::string VfsCore::resolvePath(const char* originalPath) {
-    if (!originalPath || !enabled_) {
+    if (!originalPath || !enabled_.load(std::memory_order_acquire)) {
         return originalPath ? std::string(originalPath) : "";
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::string pathStr(originalPath);
+    std::string normPath = normalizeLexicalPath(originalPath);
+    if (normPath.empty()) {
+        return originalPath ? std::string(originalPath) : "";
+    }
 
-    // Special interception for /proc/self/maps or /proc/<pid>/maps
-    if (mapsFilterEnabled_ && (pathStr == "/proc/self/maps" || pathStr.find("/maps") != std::string::npos)) {
+    // Targeted interception for /proc/[pid]/maps (SEC-02)
+    if (mapsFilterEnabled_.load(std::memory_order_acquire) && isProcMapsPath(normPath)) {
+        std::lock_guard<std::mutex> lock(mutex_);
         std::string sanitized = sanitizeMapsFile();
         if (!sanitized.empty()) {
             return sanitized;
         }
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // SEC-02: Protect host container data directory from sandbox escape!
+    // Block target container from reading com.sandbox.ball host data outside virtualRootDir_
+    const std::string hostData1 = "/data/data/com.sandbox.ball";
+    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+    bool pointsToHost = false;
+    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+        pointsToHost = true;
+    }
+
+    if (pointsToHost) {
+        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+            ALOGW("VfsCore: Blocked attempted sandbox escape to host path: %s", normPath.c_str());
+            return "/dev/null";
+        }
+    }
+
     // Check exact matches
-    auto it = exactMappings_.find(pathStr);
+    auto it = exactMappings_.find(normPath);
     if (it != exactMappings_.end()) {
         return it->second;
     }
 
-    // Check prefix matches
+    // Check prefix matches with directory boundary check (SEC-02)
     for (const auto& pair : prefixMappings_) {
         const std::string& prefix = pair.first;
-        if (pathStr.rfind(prefix, 0) == 0) {
-            std::string sub = pathStr.substr(prefix.length());
+        if (normPath.rfind(prefix, 0) == 0 &&
+            (normPath.length() == prefix.length() || normPath[prefix.length()] == '/')) {
+            std::string sub = normPath.substr(prefix.length());
             return pair.second + sub;
         }
     }
 
-    return pathStr;
+    return normPath;
 }
 
 bool VfsCore::shouldRedirect(const char* originalPath) const {
-    if (!originalPath || !enabled_) return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::string pathStr(originalPath);
+    if (!originalPath || !enabled_.load(std::memory_order_acquire)) return false;
 
-    if (mapsFilterEnabled_ && (pathStr == "/proc/self/maps" || pathStr.find("/maps") != std::string::npos)) {
+    std::string normPath = normalizeLexicalPath(originalPath);
+    if (normPath.empty()) return false;
+
+    if (mapsFilterEnabled_.load(std::memory_order_acquire) && isProcMapsPath(normPath)) {
         return true;
     }
 
-    if (exactMappings_.find(pathStr) != exactMappings_.end()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const std::string hostData1 = "/data/data/com.sandbox.ball";
+    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+            return true;
+        }
+    }
+
+    if (exactMappings_.find(normPath) != exactMappings_.end()) {
         return true;
     }
 
     for (const auto& pair : prefixMappings_) {
-        if (pathStr.rfind(pair.first, 0) == 0) {
+        const std::string& prefix = pair.first;
+        if (normPath.rfind(prefix, 0) == 0 &&
+            (normPath.length() == prefix.length() || normPath[prefix.length()] == '/')) {
             return true;
         }
     }
@@ -1232,6 +1349,7 @@ FILE: app/src/main/cpp/vfs/vfs_core.h
 #include <unordered_map>
 #include <mutex>
 #include <vector>
+#include <atomic>
 
 namespace stealth {
 namespace vfs {
@@ -1253,11 +1371,11 @@ public:
     std::string sanitizeMapsFile();
     std::string getSpoofedStatusFile();
 
-    bool isEnabled() const { return enabled_; }
-    void setEnabled(bool enabled) { enabled_ = enabled; }
+    bool isEnabled() const { return enabled_.load(std::memory_order_acquire); }
+    void setEnabled(bool enabled) { enabled_.store(enabled, std::memory_order_release); }
 
-    bool isMapsFilterEnabled() const { return mapsFilterEnabled_; }
-    void setMapsFilterEnabled(bool enabled) { mapsFilterEnabled_ = enabled; }
+    bool isMapsFilterEnabled() const { return mapsFilterEnabled_.load(std::memory_order_acquire); }
+    void setMapsFilterEnabled(bool enabled) { mapsFilterEnabled_.store(enabled, std::memory_order_release); }
 
     std::string getVirtualRootDir() const { return virtualRootDir_; }
     std::string getTargetPackage() const { return targetPkg_; }
@@ -1268,8 +1386,10 @@ private:
     VfsCore(const VfsCore&) = delete;
     VfsCore& operator=(const VfsCore&) = delete;
 
-    bool enabled_ = false;
-    bool mapsFilterEnabled_ = true;
+    // Atomic flags to prevent data races across multiple threads (SEC-05)
+    std::atomic<bool> enabled_{false};
+    std::atomic<bool> mapsFilterEnabled_{true};
+
     std::string virtualRootDir_;
     std::string targetPkg_;
     std::string fakeMac_;
@@ -1728,6 +1848,30 @@ import java.util.zip.ZipFile
 object NativeLibExtractor {
     private const val TAG = "NativeLibExtractor"
 
+    /**
+     * Validates that an entry inside the ZIP archive does not escape the destination directory.
+     * Prevents Zip Slip (Arbitrary File Overwrite) attacks (SEC-01).
+     */
+    fun validateEntry(entryName: String, prefix: String, targetLibDir: File): File {
+        if (!entryName.startsWith(prefix)) {
+            throw IllegalArgumentException("Entry '$entryName' does not start with prefix '$prefix'")
+        }
+        val soName = entryName.substring(prefix.length)
+        if (soName.contains("/") || soName.contains("\\") || soName.contains("..")) {
+            throw SecurityException("Zip Slip attack detected on entry: $entryName")
+        }
+
+        val canonicalDestDir = targetLibDir.canonicalPath + File.separator
+        val outFile = File(targetLibDir, soName)
+        val canonicalOutPath = outFile.canonicalPath
+
+        if (!canonicalOutPath.startsWith(canonicalDestDir)) {
+            throw SecurityException("Zip Slip attack detected on entry: $entryName")
+        }
+
+        return outFile
+    }
+
     fun extractNativeLibs(apkFile: File, targetLibDir: File) {
         if (!apkFile.exists()) return
         if (!targetLibDir.exists()) targetLibDir.mkdirs()
@@ -1757,17 +1901,20 @@ object NativeLibExtractor {
 
                 for (entry in entries) {
                     if (entry.name.startsWith(prefix) && entry.name.endsWith(".so")) {
-                        val soName = entry.name.substring(prefix.length)
-                        val outFile = File(targetLibDir, soName)
+                        try {
+                            val outFile = validateEntry(entry.name, prefix, targetLibDir)
 
-                        // Only extract if doesn't exist or size mismatch
-                        if (!outFile.exists() || outFile.length() != entry.size) {
-                            zip.getInputStream(entry).use { inStream ->
-                                FileOutputStream(outFile).use { outStream ->
-                                    inStream.copyTo(outStream)
+                            // Only extract if doesn't exist or size mismatch
+                            if (!outFile.exists() || outFile.length() != entry.size) {
+                                zip.getInputStream(entry).use { inStream ->
+                                    FileOutputStream(outFile).use { outStream ->
+                                        inStream.copyTo(outStream)
+                                    }
                                 }
+                                Log.d(TAG, "Extracted native lib: ${outFile.name} (${outFile.length()} bytes)")
                             }
-                            Log.d(TAG, "Extracted native lib: $soName (${outFile.length()} bytes)")
+                        } catch (se: SecurityException) {
+                            Log.w(TAG, "Blocked suspicious zip entry: ${entry.name} - ${se.message}")
                         }
                     }
                 }
@@ -3503,7 +3650,8 @@ data class AppUpdateInfo(
     val downloadUrl: String,
     val apkFileName: String,
     val releaseNotes: String = "",
-    val fileSizeBytes: Long = 0L
+    val fileSizeBytes: Long = 0L,
+    val sha256Checksum: String = ""
 ) : Serializable
 
 
@@ -3514,6 +3662,7 @@ package com.sandbox.ball.core.updater
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -3529,12 +3678,144 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 object UpdateManager {
     private const val TAG = "UpdateManager"
     private const val GITHUB_REPO_RELEASES_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases"
     private const val GITHUB_REPO_LATEST_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases/latest"
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Verifies that the update URL uses HTTPS and targets official GitHub domains (SEC-04).
+     */
+    fun isTrustedUpdateUrl(url: String): Boolean {
+        return try {
+            val parsed = URL(url)
+            val scheme = parsed.protocol
+            val host = parsed.host?.lowercase() ?: ""
+            scheme.equals("https", ignoreCase = true) && (
+                host == "github.com" ||
+                host == "objects.githubusercontent.com" ||
+                host.endsWith(".github.com") ||
+                host.endsWith(".githubusercontent.com")
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Calculates the SHA-256 checksum of a file.
+     */
+    fun calculateSha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { fis ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (fis.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Compares the computed SHA-256 against an expected checksum in constant time.
+     */
+    fun verifySha256(file: File, expectedSha256: String): Boolean {
+        if (!file.exists()) return false
+        if (expectedSha256.isBlank()) return true
+        val actualSha256 = calculateSha256(file)
+        val expectedBytes = expectedSha256.trim().lowercase().toByteArray(Charsets.UTF_8)
+        val actualBytes = actualSha256.toByteArray(Charsets.UTF_8)
+        return MessageDigest.isEqual(expectedBytes, actualBytes)
+    }
+
+    /**
+     * Verifies the integrity of a downloaded APK:
+     * 1. Checksum matching (constant-time MessageDigest comparison)
+     * 2. Package name validation
+     * 3. Signing certificate verification against currently installed host
+     */
+    fun verifyDownloadedApk(
+        context: Context,
+        apkFile: File,
+        expectedSha256: String = ""
+    ): Boolean {
+        if (!apkFile.exists()) return false
+
+        // 1. Checksum verification
+        if (expectedSha256.isNotBlank() && !verifySha256(apkFile, expectedSha256)) {
+            Log.e(TAG, "SHA-256 mismatch for APK: ${apkFile.name}")
+            apkFile.delete()
+            return false
+        }
+
+        // 2. Package name and certificate verification
+        try {
+            val pm = context.packageManager
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNATURES)
+            }
+
+            if (archiveInfo == null) {
+                Log.e(TAG, "Could not parse APK archive info: ${apkFile.name}")
+                apkFile.delete()
+                return false
+            }
+
+            if (archiveInfo.packageName != context.packageName) {
+                Log.e(TAG, "Package name mismatch! Expected: ${context.packageName}, Found: ${archiveInfo.packageName}")
+                apkFile.delete()
+                return false
+            }
+
+            val installedInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+            }
+
+            val signaturesMatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val curSign = installedInfo.signingInfo
+                val archSign = archiveInfo.signingInfo
+                if (curSign != null && archSign != null) {
+                    val curSigs = if (curSign.hasMultipleSigners()) curSign.apkContentsSigners else curSign.signingCertificateHistory
+                    val archSigs = if (archSign.hasMultipleSigners()) archSign.apkContentsSigners else archSign.signingCertificateHistory
+                    curSigs != null && archSigs != null && curSigs.any { cur ->
+                        archSigs.any { arch -> MessageDigest.isEqual(cur.toByteArray(), arch.toByteArray()) }
+                    }
+                } else false
+            } else {
+                @Suppress("DEPRECATION")
+                val curSigs = installedInfo.signatures
+                @Suppress("DEPRECATION")
+                val archSigs = archiveInfo.signatures
+                if (curSigs != null && archSigs != null) {
+                    curSigs.any { cur ->
+                        archSigs.any { arch -> MessageDigest.isEqual(cur.toByteArray(), arch.toByteArray()) }
+                    }
+                } else false
+            }
+
+            if (!signaturesMatch) {
+                Log.e(TAG, "Signature mismatch between installed app and downloaded APK!")
+                apkFile.delete()
+                return false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed verifying downloaded APK signatures: ${e.message}", e)
+            apkFile.delete()
+            return false
+        }
+
+        return true
+    }
 
     suspend fun checkForUpdate(): AppUpdateInfo? = withContext(Dispatchers.IO) {
         try {
@@ -3547,7 +3828,7 @@ object UpdateManager {
             val assets = json.getAsJsonArray("assets")
 
             var downloadUrl = ""
-            var apkName = "app-debug.apk"
+            var apkName = "app-release.apk"
             var fileSize = 0L
 
             if (assets != null && assets.size() > 0) {
@@ -3581,7 +3862,11 @@ object UpdateManager {
             val cleanTag = tagName.removePrefix("v").trim()
             val cleanCurrent = currentVersion.removePrefix("v").trim()
 
-            // Update is available if version string differs and download URL is available
+            // Extract optional SHA-256 hash from release notes (format: SHA256: <hash>)
+            val shaRegex = Regex("""(?i)SHA-?256:\s*([a-fA-F0-9]{64})""")
+            val shaMatch = shaRegex.find(releaseNotes)
+            val sha256 = shaMatch?.groupValues?.get(1)?.lowercase() ?: ""
+
             val hasUpdate = downloadUrl.isNotEmpty() && isNewerVersion(cleanTag, cleanCurrent)
 
             AppUpdateInfo(
@@ -3591,7 +3876,8 @@ object UpdateManager {
                 downloadUrl = downloadUrl,
                 apkFileName = apkName,
                 releaseNotes = releaseNotes,
-                fileSizeBytes = fileSize
+                fileSizeBytes = fileSize,
+                sha256Checksum = sha256
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check for updates: ${e.message}")
@@ -3620,7 +3906,6 @@ object UpdateManager {
             if (parsed.isJsonArray) {
                 val array = parsed.asJsonArray
                 if (array.size() == 0) return null
-                // Find first release containing an apk asset
                 var chosen: com.google.gson.JsonObject? = null
                 for (i in 0 until array.size()) {
                     val item = array.get(i).asJsonObject
@@ -3663,45 +3948,72 @@ object UpdateManager {
         return remote != current
     }
 
+    /**
+     * Downloads APK into secure internal cache directory (SEC-04).
+     * Validates HTTPS scheme and prevents insecure HTTP downgrade redirects.
+     */
     suspend fun downloadApk(
         context: Context,
         downloadUrl: String,
         onProgress: (Int) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         try {
-            val updatesDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "updates")
+            if (!isTrustedUpdateUrl(downloadUrl)) {
+                throw SecurityException("Insecure or untrusted download URL: $downloadUrl")
+            }
+
+            val updatesDir = File(context.cacheDir, "updates")
             if (!updatesDir.exists()) updatesDir.mkdirs()
 
             val apkFile = File(updatesDir, "stealth_update.apk")
             if (apkFile.exists()) apkFile.delete()
 
-            val url = URL(downloadUrl)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15000
-                readTimeout = 15000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "StealthSandbox-App")
-            }
+            var currentUrl = downloadUrl
+            var connection: HttpURLConnection
+            var redirectCount = 0
+            val maxRedirects = 5
 
-            // Handle redirect if needed
-            val responseCode = connection.responseCode
-            val finalConnection = if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
-                responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
-                responseCode == 307 || responseCode == 308) {
-                val newUrl = connection.getHeaderField("Location")
-                (URL(newUrl).openConnection() as HttpURLConnection).apply {
+            while (true) {
+                val url = URL(currentUrl)
+                connection = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15000
                     readTimeout = 15000
+                    instanceFollowRedirects = false
                     setRequestProperty("User-Agent", "StealthSandbox-App")
                 }
-            } else {
-                connection
+
+                val responseCode = connection.responseCode
+                if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
+                    responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    responseCode == 307 || responseCode == 308) {
+
+                    val newUrl = connection.getHeaderField("Location")
+                        ?: throw SecurityException("Missing redirect Location header")
+
+                    val resolvedNewUrl = URL(url, newUrl).toString()
+                    if (!isTrustedUpdateUrl(resolvedNewUrl)) {
+                        throw SecurityException("Insecure or untrusted redirect URL: $resolvedNewUrl")
+                    }
+
+                    connection.disconnect()
+                    currentUrl = resolvedNewUrl
+                    redirectCount++
+                    if (redirectCount > maxRedirects) {
+                        throw SecurityException("Too many redirects while downloading update")
+                    }
+                    continue
+                } else if (responseCode == HttpURLConnection.HTTP_OK) {
+                    break
+                } else {
+                    Log.w(TAG, "Download failed with HTTP status code: $responseCode")
+                    return@withContext null
+                }
             }
 
-            val totalSize = finalConnection.contentLength
+            val totalSize = connection.contentLength
             var downloaded = 0L
 
-            finalConnection.inputStream.use { input ->
+            connection.inputStream.use { input ->
                 FileOutputStream(apkFile).use { output ->
                     val buffer = ByteArray(8 * 1024)
                     var read: Int
@@ -3724,9 +4036,14 @@ object UpdateManager {
         }
     }
 
-    fun installApk(context: Context, apkFile: File) {
+    fun installApk(context: Context, apkFile: File, expectedSha256: String = "") {
         if (!apkFile.exists()) {
             Log.e(TAG, "APK file does not exist: ${apkFile.absolutePath}")
+            return
+        }
+
+        if (!verifyDownloadedApk(context, apkFile, expectedSha256)) {
+            Log.e(TAG, "APK verification failed; installation aborted.")
             return
         }
 
@@ -4419,8 +4736,8 @@ class MainActivity : AppCompatActivity() {
                 if (apkFile != null && apkFile.exists()) {
                     txtProgress.text = "Menginstal pembaruan..."
                     dialog.dismiss()
-                    // Installs APK directly via FileProvider
-                    UpdateManager.installApk(this@MainActivity, apkFile)
+                    // Installs APK directly via FileProvider after integrity check (SEC-04)
+                    UpdateManager.installApk(this@MainActivity, apkFile, updateInfo.sha256Checksum)
                 } else {
                     txtProgress.text = "Gagal mengunduh pembaruan"
                     btnUpdateNow.isEnabled = true
@@ -4847,7 +5164,7 @@ FILE: app/src/main/res/layout/activity_main.xml
                 android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.3.0-release • Periksa Pembaruan"
+                android:text="v1.4.0-release • Periksa Pembaruan"
                 android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -5872,10 +6189,8 @@ FILE: app/src/main/res/xml/file_paths.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="external_files" path="." />
-    <external-cache-path name="external_cache" path="." />
-    <cache-path name="cache" path="." />
-    <files-path name="files" path="." />
+    <cache-path name="updates_cache" path="updates/" />
+    <files-path name="updates_files" path="updates/" />
 </paths>
 
 
@@ -6094,6 +6409,117 @@ class ProfileGeneratorTest {
         assertTrue("Natural profile must have isNaturalMode = true", natural.isNaturalMode)
         assertNotNull("Natural profile must have an OAID", natural.oaid)
         assertEquals(15, natural.imei.length)
+    }
+}
+
+
+================================================================================
+FILE: app/src/test/java/com/sandbox/ball/SecurityHardeningTest.kt
+================================================================================
+package com.sandbox.ball
+
+import com.sandbox.ball.core.container.NativeLibExtractor
+import com.sandbox.ball.core.updater.UpdateManager
+import org.junit.Assert.*
+import org.junit.Test
+import java.io.File
+
+class SecurityHardeningTest {
+
+    @Test
+    fun testZipSlipDirectoryTraversalProtection() {
+        val tempDir = File(System.getProperty("java.io.tmpdir"), "sandbox_test_libs_${System.currentTimeMillis()}")
+        tempDir.mkdirs()
+
+        try {
+            // Test 1: Malicious entry attempting to escape using ..
+            val maliciousEntry = "lib/arm64-v8a/../../shared_prefs/hacked.xml"
+            try {
+                NativeLibExtractor.validateEntry(maliciousEntry, "lib/arm64-v8a/", tempDir)
+                fail("Expected SecurityException for Zip Slip entry: $maliciousEntry")
+            } catch (e: SecurityException) {
+                assertTrue("Exception message should mention Zip Slip", e.message?.contains("Zip Slip") == true)
+            }
+
+            // Test 2: Sub-directory separator traversal
+            val subDirEntry = "lib/arm64-v8a/subfolder/libtest.so"
+            try {
+                NativeLibExtractor.validateEntry(subDirEntry, "lib/arm64-v8a/", tempDir)
+                fail("Expected SecurityException for nested sub-directory entry")
+            } catch (e: SecurityException) {
+                assertTrue(e.message?.contains("Zip Slip") == true)
+            }
+
+            // Test 3: Legitimate native library entry
+            val validEntry = "lib/arm64-v8a/libtest.so"
+            val validOutFile = NativeLibExtractor.validateEntry(validEntry, "lib/arm64-v8a/", tempDir)
+            assertEquals("libtest.so", validOutFile.name)
+            assertEquals(tempDir.canonicalPath, validOutFile.parentFile?.canonicalPath)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun testUpdateUrlValidation() {
+        // HTTP protocol downgrade must be rejected
+        assertFalse(
+            "HTTP must be rejected",
+            UpdateManager.isTrustedUpdateUrl("http://github.com/Dayat222/sanbox_ball/releases/download/v1.4.0/app-release.apk")
+        )
+
+        // Untrusted / malicious third-party domain must be rejected
+        assertFalse(
+            "External domain must be rejected",
+            UpdateManager.isTrustedUpdateUrl("https://malicious-server.com/malware.apk")
+        )
+        assertFalse(
+            "Spoofed domain must be rejected",
+            UpdateManager.isTrustedUpdateUrl("https://github.com.evil.com/app.apk")
+        )
+
+        // Legitimate GitHub release URLs must be accepted
+        assertTrue(
+            "Official github.com release URL must be accepted",
+            UpdateManager.isTrustedUpdateUrl("https://github.com/Dayat222/sanbox_ball/releases/download/v1.4.0/app-release.apk")
+        )
+        assertTrue(
+            "Official GitHub CDN asset URL must be accepted",
+            UpdateManager.isTrustedUpdateUrl("https://objects.githubusercontent.com/github-production-release-asset-2e65be/app-release.apk")
+        )
+    }
+
+    @Test
+    fun testSha256ChecksumVerification() {
+        val tempApk = File.createTempFile("test_update_", ".apk")
+        try {
+            tempApk.writeText("Stealth Sandbox Engine secure integrity content payload")
+
+            val actualSha256 = UpdateManager.calculateSha256(tempApk)
+            assertNotNull(actualSha256)
+            assertEquals(64, actualSha256.length)
+
+            // Correct checksum should succeed
+            assertTrue(
+                "Matching SHA-256 must pass verification",
+                UpdateManager.verifySha256(tempApk, actualSha256)
+            )
+
+            // Case-insensitive checksum comparison
+            assertTrue(
+                "Uppercase SHA-256 must pass verification",
+                UpdateManager.verifySha256(tempApk, actualSha256.uppercase())
+            )
+
+            // Tampered / incorrect checksum must be rejected
+            val fakeSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            assertFalse(
+                "Mismatched SHA-256 must be rejected",
+                UpdateManager.verifySha256(tempApk, fakeSha256)
+            )
+        } finally {
+            tempApk.delete()
+        }
     }
 }
 
@@ -6524,6 +6950,232 @@ Agar objek `TelephonyHook`, `WifiHook`, `SettingsSecureHook`, dan `PackageManage
    * Pengujian pembacaan `/proc/self/maps` secara paralel oleh 10 *thread* bersamaan selama 5 detik tidak boleh menghasilkan *crash* (`SIGSEGV`/`SIGABRT`) atau *file descriptor leak*.
 4. **Verifikasi Build Rilis:**
    * GitHub Actions berhasil menghasilkan APK rilis yang telah di-*obfuscate* oleh R8 dan ditandatangani secara valid tanpa menyertakan bendera `FLAG_DEBUGGABLE`.
+
+================================================================================
+FILE: prd1.4.md
+================================================================================
+# Product Requirements Document (PRD): Hardening Keamanan, Mitigasi Sandbox Escape, & DevSecOps (v1.4.0)
+
+**Nama Proyek:** Stealth Sandbox Engine (`sanbox_ball`)  
+**Repositori Target:** `github.com/Dayat222/sanbox_ball`  
+**Status Dokumen:** Spesifikasi Remediasi Keamanan (Security Hardening Specification)  
+**Versi Basis Audit:** `v1.3.0-release`  
+**Target Rilis:** `v1.4.0-release`  
+**Target Platform:** Android 5.0 (API 21) $\rightarrow$ Android 14 (API 34), Compile SDK 35
+
+---
+
+## 1. Ringkasan Eksekutif & Latar Belakang Audit
+Berdasarkan audit keamanan menyeluruh terhadap kode sumber **Stealth Sandbox Engine (`v1.3.0-release`)**, ditemukan **7 celah keamanan** yang mencakup kategori Kritis, Tinggi, Menengah, hingga Rendah. Celah keamanan tersebut berpotensi dieksploitasi oleh aplikasi berbahaya yang dikloning untuk keluar dari isolasi kontainer (*Sandbox Escape*), menimpa berkas internal aplikasi *host* (*Zip Slip*), melakukan serangan *Man-in-the-Middle* (MitM) pada mekanisme pembaruan aplikasi (*In-App Updater*), serta memicu *Undefined Behavior* akibat *Data Race* pada lapisan C++.
+
+Dokumen PRD ini menetapkan spesifikasi teknis tingkat kode untuk menutup seluruh celah keamanan tersebut agar arsitektur kontainer memenuhi standar keamanan produksi.
+
+---
+
+## 2. Matriks Kerentanan & Target Remediasi (Security Remediation Matrix)
+
+| Kode ID | Komponen / Berkas Terkait | Celah Keamanan pada v1.3.0 | Solusi Remediasi pada v1.4.0 | Tingkat Risiko |
+| :--- | :--- | :--- | :--- | :--- |
+| **SEC-01** | `NativeLibExtractor.kt` | Kerentanan *Zip Slip* (*Arbitrary File Overwrite*) saat mengekstrak pustaka `.so` dari APK tanpa validasi jalur kanonik. | Validasi ketat `outFile.canonicalPath` terhadap `targetLibDir.canonicalPath` sebelum ekstraksi. | **Kritis (P0)** |
+| **SEC-02** | `app/src/main/cpp/vfs/vfs_core.cpp` | *Path Traversal* (`..`) keluar dari VFS, pencocokan prefix tanpa batas direktori (`/`), dan intersepsi `/maps` yang salah sasaran. | Normalisasi jalur (`realpath`/resolusi segmen `..`), validasi batas direktori `/`, dan pembatasan filter `/maps` khusus pada `/proc/`. | **Kritis (P0)** |
+| **SEC-03** | `app/src/main/cpp/hook/syscall_hook.cpp` | Halaman memori `.got` dibiarkan `PROT_WRITE` secara permanen (melemahkan RELRO & memicu deteksi *anti-cheat*). | Membaca izin asli halaman memori dan mengembalikan proteksi memori (`PROT_READ`) setelah penulisan pointer GOT selesai. | **Tinggi (P0)** |
+| **SEC-04** | `UpdateManager.kt` & `AppUpdateInfo.kt` | *In-App Update* tanpa verifikasi hash SHA-256 & tanda tangan sertifikat, celah *HTTP redirect downgrade*, serta penyimpanan di *external storage*. | Penambahan validasi skema `https://` pada *redirect*, penyimpanan di `context.cacheDir`, serta verifikasi SHA-256 dan sertifikat APK. | **Tinggi (P0)** |
+| **SEC-05** | `vfs_core.h`, `vfs_core.cpp`, `syscall_hook.cpp` | *Data Race* (C++17 *Undefined Behavior*) pada variabel status boolean/integer yang diakses lintas *thread* tanpa sinkronisasi atomik. | Mengubah `enabled_`, `mapsFilterEnabled_`, `g_antidebug_enabled`, dan `g_hooks_installed` menjadi `std::atomic`. | **Menengah (P1)** |
+| **SEC-06** | `app/build.gradle.kts` & `.github/workflows/build.yml` | APK `release` ditandatangani dengan kunci `debug` (`CN=Android Debug`) dan `app-debug.apk` ikut dipublikasikan ke GitHub Release. | Konfigurasi `signingConfigs.release` berbasis *Environment Variables* / *GitHub Secrets* dan penghapusan `app-debug.apk` dari rilis publik. | **Menengah (P1)** |
+| **SEC-07** | `AndroidManifest.xml` & `res/xml/file_paths.xml` | Atribut `android:allowBackup="true"` mengekspos data kontainer via ADB, dan `file_paths.xml` mengekspos seluruh direktori root (`.`). | Mengubah `android:allowBackup="false"` dan membatasi `file_paths.xml` hanya pada sub-direktori `updates/`. | **Rendah (P2)** |
+
+---
+
+## 3. Spesifikasi Teknis Perbaikan Lapisan Kotlin/Java
+
+### 3.1. Mitigasi Kerentanan *Zip Slip* pada Ekstraktor Native (`SEC-01`)
+* **Lokasi Berkas:** `app/src/main/java/com/sandbox/ball/core/container/NativeLibExtractor.kt`
+* **Analisis Masalah:**
+  Saat mengekstrak berkas `.so` dari APK yang dikloning, kode mengambil `val soName = entry.name.substring(prefix.length)` lalu langsung membuka `FileOutputStream(File(targetLibDir, soName))`. APK yang dimodifikasi dengan nama entri `lib/arm64-v8a/../../../files/exploit.so` dapat menimpa berkas di luar direktori target.
+* **Spesifikasi Perbaikan:**
+  1. Ambil jalur kanonik dari direktori tujuan terlebih dahulu: `val canonicalDestDir = targetLibDir.canonicalPath + File.separator`.
+  2. Tolak setiap nama entri yang mengandung karakter pemisah direktori terlarang atau yang jalur kanoniknya keluar dari `canonicalDestDir`:
+     ```kotlin
+     val soName = entry.name.substring(prefix.length)
+     if (soName.contains("/") || soName.contains("\\") || soName.contains("..")) {
+         Log.w(TAG, "Blocked suspicious zip entry name: ${entry.name}")
+         continue
+     }
+
+     val outFile = File(targetLibDir, soName)
+     val canonicalOutPath = outFile.canonicalPath
+     if (!canonicalOutPath.startsWith(canonicalDestDir)) {
+         throw SecurityException("Zip Slip attack detected on entry: ${entry.name}")
+     }
+     ```
+
+### 3.2. Pengamanan *In-App Updater* & Verifikasi Integritas APK (`SEC-04`)
+* **Lokasi Berkas:** `app/src/main/java/com/sandbox/ball/core/updater/UpdateManager.kt` & `AppUpdateInfo.kt`
+* **Analisis Masalah:**
+  1. `UpdateManager.downloadApk()` mengikuti *redirect* HTTP (`301/302/307/308`) tanpa memeriksa apakah URL tujuan (`Location`) diturunkan ke protokol tidak terenkripsi (`http://`) atau diarahkan ke domain berbahaya.
+  2. Berkas APK disimpan di `context.getExternalFilesDir(null)` yang lebih rentan terhadap modifikasi pihak ketiga dibandingkan ruang penyimpanan internal aplikasi.
+  3. Tidak ada verifikasi *checksum* SHA-256 maupun pemeriksaan kesesuaian tanda tangan kriptografi (*APK Signature Verification*) sebelum memanggil `installApk()`.
+* **Spesifikasi Perbaikan:**
+  1. **Validasi Protokol & Domain pada Redirect:**
+     * Buat fungsi pembantu `isTrustedUpdateUrl(url: String): Boolean` yang memastikan URL menggunakan skema `https://` dan berasal dari domain resmi GitHub (`github.com` atau `objects.githubusercontent.com`).
+     * Sebelum mengikuti header `Location`, panggil `isTrustedUpdateUrl(newUrl)`. Jika tidak valid, batalkan pengunduhan dan lempar `SecurityException`.
+  2. **Isolasi Penyimpanan Unduhan:**
+     * Ubah lokasi penyimpanan berkas unduhan dari `context.getExternalFilesDir(null)` menjadi direktori internal `File(context.cacheDir, "updates")`.
+  3. **Verifikasi SHA-256 & Sertifikat Penandatangan APK:**
+     * Tambahkan properti `val sha256Checksum: String = ""` pada `AppUpdateInfo.kt` (diekstrak dari catatan rilis GitHub jika tersedia, misalnya format `SHA256: <64-hex>`).
+     * Buat metode `verifyDownloadedApk(context: Context, apkFile: File, expectedSha256: String): Boolean` di `UpdateManager.kt`:
+       * Jika `expectedSha256` tidak kosong, hitung digest `SHA-256` dari `apkFile` dan bandingkan secara *constant-time* (`MessageDigest.isEqual`).
+       * Gunakan `PackageManager.getPackageArchiveInfo()` dengan flag `GET_SIGNING_CERTIFICATES` (API 28+) atau `GET_SIGNATURES` (API 21–27) untuk memverifikasi bahwa nama paket di dalam APK yang diunduh adalah `context.packageName` dan sertifikat penandatangannya identik dengan sertifikat aplikasi yang sedang terinstal.
+       * Jika verifikasi gagal, hapus `apkFile` seketika dan batalkan proses instalasi.
+
+---
+
+## 4. Spesifikasi Teknis Perbaikan Lapisan Native C++ (NDK)
+
+### 4.1. Sanitasi *Path Traversal* & Perbaikan Pencocokan VFS (`SEC-02`)
+* **Lokasi Berkas:** `app/src/main/cpp/vfs/vfs_core.cpp` & `app/src/main/cpp/vfs/vfs_core.h`
+* **Analisis Masalah:**
+  1. Pemanggilan `open("/data/data/<targetPkg>/../../../data/com.sandbox.ball/shared_prefs/...")` lolos dari pemeriksaan prefix dan memungkinkan aplikasi di dalam kontainer mengakses direktori milik *host* `com.sandbox.ball`.
+  2. Pemeriksaan `pathStr.find("/maps") != std::string::npos` terlalu luas karena mencegat semua berkas aplikasi yang kebetulan memiliki kata `/maps` di dalamnya.
+  3. Pencocokan prefix `pathStr.rfind(prefix, 0) == 0` tidak memeriksa karakter pembatas `/`, sehingga `/data/data/com.app` dapat mencocokkan `/data/data/com.app_other`.
+* **Spesifikasi Perbaikan:**
+  1. **Fungsi Normalisasi Jalur (`normalizeLexicalPath`):**
+     Tambahkan fungsi di `vfs_core.cpp` yang memecah jalur berdasarkan `/` dan menyelesaikan setiap segmen `.` serta `..` secara leksikal sebelum pencocokan dilakukan:
+     ```cpp
+     static std::string normalizeLexicalPath(const std::string& rawPath) {
+         if (rawPath.empty()) return "";
+         bool isAbsolute = (rawPath[0] == '/');
+         std::vector<std::string> parts;
+         std::stringstream ss(rawPath);
+         std::string item;
+         while (std::getline(ss, item, '/')) {
+             if (item.empty() || item == ".") continue;
+             if (item == "..") {
+                 if (!parts.empty()) parts.pop_back();
+             } else {
+                 parts.push_back(item);
+             }
+         }
+         std::string result = isAbsolute ? "/" : "";
+         for (size_t i = 0; i < parts.size(); ++i) {
+             result += parts[i];
+             if (i + 1 < parts.size()) result += "/";
+         }
+         return result;
+     }
+     ```
+  2. **Proteksi Direktori Host Sandbox:**
+     Setelah jalur dinormalisasi, apabila jalur mengarah ke direktori internal `com.sandbox.ball` di luar `virtualRootDir_` (misalnya `/data/data/com.sandbox.ball/shared_prefs` atau `/data/user/0/com.sandbox.ball/shared_prefs`), blokir akses dengan mengarahkannya ke `/dev/null` atau mengembalikan jalur tidak valid agar aplikasi target tidak dapat mencuri konfigurasi *host*.
+  3. **Perbaikan Intersepsi `/proc/.../maps`:**
+     Buat fungsi spesifik `isProcMapsPath(const std::string& path)`:
+     ```cpp
+     static bool isProcMapsPath(const std::string& path) {
+         if (path == "/proc/self/maps" || path == "/proc/thread-self/maps") return true;
+         if (path.rfind("/proc/", 0) == 0 && path.length() > 11) {
+             return path.compare(path.length() - 5, 5, "/maps") == 0;
+         }
+         return false;
+     }
+     ```
+  4. **Validasi Batas Direktori pada Prefix Mapping:**
+     Pastikan karakter setelah prefix adalah `/` atau akhir dari string:
+     ```cpp
+     if (normPath.rfind(prefix, 0) == 0 &&
+         (normPath.length() == prefix.length() || normPath[prefix.length()] == '/')) {
+         std::string sub = normPath.substr(prefix.length());
+         return pair.second + sub;
+     }
+     ```
+
+### 4.2. Pemulihan Proteksi Memori GOT / RELRO (`SEC-03`)
+* **Lokasi Berkas:** `app/src/main/cpp/hook/syscall_hook.cpp`
+* **Analisis Masalah:**
+  Pada `plt_hook_callback`, halaman memori `.got` diubah menggunakan `mprotect(page_start, page_size, PROT_READ | PROT_WRITE)` namun tidak dikembalikan ke izin semula. Apabila pustaka dikompilasi dengan *Full RELRO* (`GNU_RELRO`), membiarkan halaman GOT berstatus `RW` membuka celah *GOT Overwrite* dan memicu deteksi *anti-cheat* yang memindai adanya izin `w` pada segmen konstanta/RELRO di `/proc/self/maps`.
+* **Spesifikasi Perbaikan:**
+  1. Periksa apakah alamat `got_entry` berada di dalam segmen `PT_GNU_RELRO` milik objek ELF terkait (`phdr[i].p_type == PT_GNU_RELRO`).
+  2. Jika `got_entry` berada di dalam rentang `PT_GNU_RELRO`, maka setelah nilai `*got_entry = target.hook_func` ditulis dan `__builtin___clear_cache` dipanggil, kembalikan izin halaman memori tersebut menjadi `PROT_READ`:
+     ```cpp
+     if (is_relro_page) {
+         mprotect(page_start, page_size, PROT_READ);
+     }
+     ```
+  3. Jika tidak berada di dalam `PT_GNU_RELRO` (berbagi halaman dengan `.data`), biarkan `PROT_READ | PROT_WRITE` agar tidak memicu `SIGSEGV`.
+
+### 4.3. Perbaikan *Data Race* dengan `std::atomic` (`SEC-05`)
+* **Lokasi Berkas:** `app/src/main/cpp/vfs/vfs_core.h`, `app/src/main/cpp/vfs/vfs_core.cpp`, dan `app/src/main/cpp/hook/syscall_hook.cpp`
+* **Spesifikasi Perbaikan:**
+  1. Di `vfs_core.h`:
+     * Tambahkan `#include <atomic>`.
+     * Ubah `bool enabled_ = false;` menjadi `std::atomic<bool> enabled_{false};`.
+     * Ubah `bool mapsFilterEnabled_ = true;` menjadi `std::atomic<bool> mapsFilterEnabled_{true};`.
+     * Gunakan `enabled_.load(std::memory_order_acquire)` pada pembacaan dan `enabled_.store(enabled, std::memory_order_release)` pada penulisan.
+  2. Di `syscall_hook.cpp`:
+     * Tambahkan `#include <atomic>`.
+     * Ubah `static int g_antidebug_enabled = 1;` menjadi `static std::atomic<int> g_antidebug_enabled{1};`.
+     * Ubah `static int g_hooks_installed = 0;` menjadi `static std::atomic<int> g_hooks_installed{0};`.
+
+---
+
+## 5. Spesifikasi Pengamanan Manifest, Build, & DevSecOps
+
+### 5.1. Konfigurasi Penandatanganan Rilis & GitHub Actions (`SEC-06`)
+* **Lokasi Berkas:** `app/build.gradle.kts` & `.github/workflows/build.yml`
+* **Spesifikasi Perbaikan:**
+  1. Di `app/build.gradle.kts`, tambahkan blok `signingConfigs` yang membaca konfigurasi *Keystore* produksi dari variabel lingkungan (`KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`), dan gunakan *fallback* ke `debug` hanya jika variabel lingkungan tidak tersedia pada kompilasi lokal:
+     ```kotlin
+     signingConfigs {
+         create("release") {
+             val ksPath = System.getenv("KEYSTORE_PATH")
+             if (!ksPath.isNullOrEmpty() && file(ksPath).exists()) {
+                 storeFile = file(ksPath)
+                 storePassword = System.getenv("KEYSTORE_PASSWORD")
+                 keyAlias = System.getenv("KEY_ALIAS")
+                 keyPassword = System.getenv("KEY_PASSWORD")
+             }
+         }
+     }
+     ```
+  2. Pada blok `buildTypes.release`, arahkan `signingConfig` ke `signingConfigs.getByName("release")` apabila `storeFile` tersedia.
+  3. Di `.github/workflows/build.yml`, pada langkah `Create GitHub Release`, hapus `app/build/outputs/apk/debug/app-debug.apk` dari properti `files:` agar rilis publik hanya mendistribusikan `app-release.apk` yang telah di-*obfuscate* dan tidak memiliki flag *debuggable*.
+
+### 5.2. Hardening `AndroidManifest.xml` & `file_paths.xml` (`SEC-07`)
+* **Lokasi Berkas:** `app/src/main/AndroidManifest.xml` & `app/src/main/res/xml/file_paths.xml`
+* **Spesifikasi Perbaikan:**
+  1. Di `app/src/main/AndroidManifest.xml`, ubah atribut `<application>` dari `android:allowBackup="true"` menjadi:
+     ```xml
+     android:allowBackup="false"
+     android:fullBackupContent="false"
+     ```
+  2. Di `app/src/main/res/xml/file_paths.xml`, hapus eksposur direktori root (`path="."`) dan batasi hanya ke sub-direktori `updates/`:
+     ```xml
+     <?xml version="1.0" encoding="utf-8"?>
+     <paths xmlns:android="http://schemas.android.com/apk/res/android">
+         <cache-path name="updates_cache" path="updates/" />
+         <files-path name="updates_files" path="updates/" />
+     </paths>
+     ```
+
+---
+
+## 6. Rencana Pengujian Keamanan (Security Verification Plan)
+
+Tambahkan pengujian unit baru pada `app/src/test/java/com/sandbox/ball/SecurityHardeningTest.kt` yang memverifikasi:
+1. **Uji Anti-Zip Slip:** Mensimulasikan entri zip dengan nama `lib/arm64-v8a/../../shared_prefs/hacked.xml` dan memastikan fungsi validasi menolak jalur tersebut dengan `SecurityException`.
+2. **Uji Validasi URL Pembaruan:** Memastikan URL dengan protokol `http://` atau domain di luar GitHub ditolak oleh validator URL pada `UpdateManager`.
+3. **Uji Verifikasi Checksum SHA-256:** Memastikan fungsi pencocokan hash SHA-256 menolak berkas APK jika *checksum* berbeda dari nilai yang diharapkan.
+
+---
+
+## 7. Daftar Periksa Kriteria Penerimaan (Acceptance Criteria Checklist)
+
+Sebelum merilis tag versi `v1.4.0-release`, seluruh kriteria berikut wajib terpenuhi:
+- [ ] **AC-01 (Anti-Zip Slip):** `NativeLibExtractor.kt` memvalidasi `canonicalPath` dan menolak entri zip yang mengandung `..` atau karakter pemisah direktori.
+- [ ] **AC-02 (VFS Path Normalization):** `VfsCore::resolvePath()` menormalisasi segmen `..`, memeriksa batas direktori `/`, melindungi direktori `com.sandbox.ball`, dan hanya menerapkan filter `/maps` pada jalur `/proc/`.
+- [ ] **AC-03 (RELRO Memory Protection):** `syscall_hook.cpp` mengembalikan izin `PROT_READ` pada halaman memori yang termasuk dalam segmen `PT_GNU_RELRO` setelah modifikasi GOT selesai.
+- [ ] **AC-04 (Secure Updater):** `UpdateManager.kt` menyimpan APK di `context.cacheDir`, memvalidasi `https://` saat *redirect*, serta memverifikasi hash SHA-256 dan sertifikat paket sebelum instalasi.
+- [ ] **AC-05 (Thread-Safe Atomics):** Seluruh variabel status lintas *thread* di `vfs_core.h` dan `syscall_hook.cpp` menggunakan `std::atomic`.
+- [ ] **AC-06 (Manifest & Provider Hardening):** `AndroidManifest.xml` menggunakan `android:allowBackup="false"` dan `file_paths.xml` hanya mengekspos folder `updates/`.
+- [ ] **AC-07 (Release Pipeline):** GitHub Release hanya mendistribusikan `app-release.apk` dan mendukung konfigurasi *Keystore* produksi.
 
 ================================================================================
 FILE: prd3.md

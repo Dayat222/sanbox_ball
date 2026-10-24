@@ -9,6 +9,30 @@ import java.util.zip.ZipFile
 object NativeLibExtractor {
     private const val TAG = "NativeLibExtractor"
 
+    /**
+     * Validates that an entry inside the ZIP archive does not escape the destination directory.
+     * Prevents Zip Slip (Arbitrary File Overwrite) attacks (SEC-01).
+     */
+    fun validateEntry(entryName: String, prefix: String, targetLibDir: File): File {
+        if (!entryName.startsWith(prefix)) {
+            throw IllegalArgumentException("Entry '$entryName' does not start with prefix '$prefix'")
+        }
+        val soName = entryName.substring(prefix.length)
+        if (soName.contains("/") || soName.contains("\\") || soName.contains("..")) {
+            throw SecurityException("Zip Slip attack detected on entry: $entryName")
+        }
+
+        val canonicalDestDir = targetLibDir.canonicalPath + File.separator
+        val outFile = File(targetLibDir, soName)
+        val canonicalOutPath = outFile.canonicalPath
+
+        if (!canonicalOutPath.startsWith(canonicalDestDir)) {
+            throw SecurityException("Zip Slip attack detected on entry: $entryName")
+        }
+
+        return outFile
+    }
+
     fun extractNativeLibs(apkFile: File, targetLibDir: File) {
         if (!apkFile.exists()) return
         if (!targetLibDir.exists()) targetLibDir.mkdirs()
@@ -38,17 +62,20 @@ object NativeLibExtractor {
 
                 for (entry in entries) {
                     if (entry.name.startsWith(prefix) && entry.name.endsWith(".so")) {
-                        val soName = entry.name.substring(prefix.length)
-                        val outFile = File(targetLibDir, soName)
+                        try {
+                            val outFile = validateEntry(entry.name, prefix, targetLibDir)
 
-                        // Only extract if doesn't exist or size mismatch
-                        if (!outFile.exists() || outFile.length() != entry.size) {
-                            zip.getInputStream(entry).use { inStream ->
-                                FileOutputStream(outFile).use { outStream ->
-                                    inStream.copyTo(outStream)
+                            // Only extract if doesn't exist or size mismatch
+                            if (!outFile.exists() || outFile.length() != entry.size) {
+                                zip.getInputStream(entry).use { inStream ->
+                                    FileOutputStream(outFile).use { outStream ->
+                                        inStream.copyTo(outStream)
+                                    }
                                 }
+                                Log.d(TAG, "Extracted native lib: ${outFile.name} (${outFile.length()} bytes)")
                             }
-                            Log.d(TAG, "Extracted native lib: $soName (${outFile.length()} bytes)")
+                        } catch (se: SecurityException) {
+                            Log.w(TAG, "Blocked suspicious zip entry: ${entry.name} - ${se.message}")
                         }
                     }
                 }

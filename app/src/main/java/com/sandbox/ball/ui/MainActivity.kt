@@ -237,8 +237,8 @@ class MainActivity : AppCompatActivity() {
                 if (apkFile != null && apkFile.exists()) {
                     txtProgress.text = "Menginstal pembaruan..."
                     dialog.dismiss()
-                    // Installs APK directly via FileProvider
-                    UpdateManager.installApk(this@MainActivity, apkFile)
+                    // Installs APK directly via FileProvider after integrity check (SEC-04)
+                    UpdateManager.installApk(this@MainActivity, apkFile, updateInfo.sha256Checksum)
                 } else {
                     txtProgress.text = "Gagal mengunduh pembaruan"
                     btnUpdateNow.isEnabled = true

@@ -9,5 +9,6 @@ data class AppUpdateInfo(
     val downloadUrl: String,
     val apkFileName: String,
     val releaseNotes: String = "",
-    val fileSizeBytes: Long = 0L
+    val fileSizeBytes: Long = 0L,
+    val sha256Checksum: String = ""
 ) : Serializable

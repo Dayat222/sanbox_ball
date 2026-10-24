@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <vector>
 
 namespace stealth {
 namespace vfs {
@@ -22,6 +23,44 @@ static void ensureDirectory(const std::string& path) {
         }
     }
     mkdir(path.c_str(), 0755);
+}
+
+/**
+ * Lexically normalizes a path by resolving '.' and '..' segments without requiring file existence.
+ * Prevents Directory Traversal (SEC-02).
+ */
+static std::string normalizeLexicalPath(const std::string& rawPath) {
+    if (rawPath.empty()) return "";
+    bool isAbsolute = (rawPath[0] == '/');
+    std::vector<std::string> parts;
+    std::stringstream ss(rawPath);
+    std::string item;
+    while (std::getline(ss, item, '/')) {
+        if (item.empty() || item == ".") continue;
+        if (item == "..") {
+            if (!parts.empty()) parts.pop_back();
+        } else {
+            parts.push_back(item);
+        }
+    }
+    std::string result = isAbsolute ? "/" : "";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        result += parts[i];
+        if (i + 1 < parts.size()) result += "/";
+    }
+    return result;
+}
+
+/**
+ * Checks specifically whether the target path targets /proc/[pid]/maps.
+ * Avoids false positive interceptions of application files containing '/maps' (SEC-02).
+ */
+static bool isProcMapsPath(const std::string& path) {
+    if (path == "/proc/self/maps" || path == "/proc/thread-self/maps") return true;
+    if (path.rfind("/proc/", 0) == 0 && path.length() > 11) {
+        return path.compare(path.length() - 5, 5, "/maps") == 0;
+    }
+    return false;
 }
 
 VfsCore& VfsCore::getInstance() {
@@ -41,7 +80,7 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     std::string fakeDir = virtualRootDir_ + "/fake_sys";
     ensureDirectory(fakeDir);
 
-    // Clean up old temporary proc_maps.* files from previous sessions (FIX-06)
+    // Clean up old temporary proc_maps.* files from previous sessions
     DIR* dir = opendir(fakeDir.c_str());
     if (dir) {
         struct dirent* entry;
@@ -78,7 +117,7 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
         prefixMappings_.push_back({"/data/user/0/" + targetPkg_, virtualDataDir});
     }
 
-    enabled_ = true;
+    enabled_.store(true, std::memory_order_release);
     ALOGI("VfsCore initialized successfully for package: %s, root: %s",
           targetPkg_.c_str(), virtualRootDir_.c_str());
 }
@@ -94,54 +133,91 @@ void VfsCore::addPrefixMapping(const std::string& virtualPrefix, const std::stri
 }
 
 std::string VfsCore::resolvePath(const char* originalPath) {
-    if (!originalPath || !enabled_) {
+    if (!originalPath || !enabled_.load(std::memory_order_acquire)) {
         return originalPath ? std::string(originalPath) : "";
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::string pathStr(originalPath);
+    std::string normPath = normalizeLexicalPath(originalPath);
+    if (normPath.empty()) {
+        return originalPath ? std::string(originalPath) : "";
+    }
 
-    // Special interception for /proc/self/maps or /proc/<pid>/maps
-    if (mapsFilterEnabled_ && (pathStr == "/proc/self/maps" || pathStr.find("/maps") != std::string::npos)) {
+    // Targeted interception for /proc/[pid]/maps (SEC-02)
+    if (mapsFilterEnabled_.load(std::memory_order_acquire) && isProcMapsPath(normPath)) {
+        std::lock_guard<std::mutex> lock(mutex_);
         std::string sanitized = sanitizeMapsFile();
         if (!sanitized.empty()) {
             return sanitized;
         }
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // SEC-02: Protect host container data directory from sandbox escape!
+    // Block target container from reading com.sandbox.ball host data outside virtualRootDir_
+    const std::string hostData1 = "/data/data/com.sandbox.ball";
+    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+    bool pointsToHost = false;
+    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+        pointsToHost = true;
+    }
+
+    if (pointsToHost) {
+        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+            ALOGW("VfsCore: Blocked attempted sandbox escape to host path: %s", normPath.c_str());
+            return "/dev/null";
+        }
+    }
+
     // Check exact matches
-    auto it = exactMappings_.find(pathStr);
+    auto it = exactMappings_.find(normPath);
     if (it != exactMappings_.end()) {
         return it->second;
     }
 
-    // Check prefix matches
+    // Check prefix matches with directory boundary check (SEC-02)
     for (const auto& pair : prefixMappings_) {
         const std::string& prefix = pair.first;
-        if (pathStr.rfind(prefix, 0) == 0) {
-            std::string sub = pathStr.substr(prefix.length());
+        if (normPath.rfind(prefix, 0) == 0 &&
+            (normPath.length() == prefix.length() || normPath[prefix.length()] == '/')) {
+            std::string sub = normPath.substr(prefix.length());
             return pair.second + sub;
         }
     }
 
-    return pathStr;
+    return normPath;
 }
 
 bool VfsCore::shouldRedirect(const char* originalPath) const {
-    if (!originalPath || !enabled_) return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::string pathStr(originalPath);
+    if (!originalPath || !enabled_.load(std::memory_order_acquire)) return false;
 
-    if (mapsFilterEnabled_ && (pathStr == "/proc/self/maps" || pathStr.find("/maps") != std::string::npos)) {
+    std::string normPath = normalizeLexicalPath(originalPath);
+    if (normPath.empty()) return false;
+
+    if (mapsFilterEnabled_.load(std::memory_order_acquire) && isProcMapsPath(normPath)) {
         return true;
     }
 
-    if (exactMappings_.find(pathStr) != exactMappings_.end()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const std::string hostData1 = "/data/data/com.sandbox.ball";
+    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+            return true;
+        }
+    }
+
+    if (exactMappings_.find(normPath) != exactMappings_.end()) {
         return true;
     }
 
     for (const auto& pair : prefixMappings_) {
-        if (pathStr.rfind(pair.first, 0) == 0) {
+        const std::string& prefix = pair.first;
+        if (normPath.rfind(prefix, 0) == 0 &&
+            (normPath.length() == prefix.length() || normPath[prefix.length()] == '/')) {
             return true;
         }
     }

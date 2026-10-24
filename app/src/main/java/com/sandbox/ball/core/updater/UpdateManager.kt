@@ -2,6 +2,7 @@ package com.sandbox.ball.core.updater
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -17,12 +18,144 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 object UpdateManager {
     private const val TAG = "UpdateManager"
     private const val GITHUB_REPO_RELEASES_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases"
     private const val GITHUB_REPO_LATEST_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases/latest"
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * Verifies that the update URL uses HTTPS and targets official GitHub domains (SEC-04).
+     */
+    fun isTrustedUpdateUrl(url: String): Boolean {
+        return try {
+            val parsed = URL(url)
+            val scheme = parsed.protocol
+            val host = parsed.host?.lowercase() ?: ""
+            scheme.equals("https", ignoreCase = true) && (
+                host == "github.com" ||
+                host == "objects.githubusercontent.com" ||
+                host.endsWith(".github.com") ||
+                host.endsWith(".githubusercontent.com")
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Calculates the SHA-256 checksum of a file.
+     */
+    fun calculateSha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { fis ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (fis.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Compares the computed SHA-256 against an expected checksum in constant time.
+     */
+    fun verifySha256(file: File, expectedSha256: String): Boolean {
+        if (!file.exists()) return false
+        if (expectedSha256.isBlank()) return true
+        val actualSha256 = calculateSha256(file)
+        val expectedBytes = expectedSha256.trim().lowercase().toByteArray(Charsets.UTF_8)
+        val actualBytes = actualSha256.toByteArray(Charsets.UTF_8)
+        return MessageDigest.isEqual(expectedBytes, actualBytes)
+    }
+
+    /**
+     * Verifies the integrity of a downloaded APK:
+     * 1. Checksum matching (constant-time MessageDigest comparison)
+     * 2. Package name validation
+     * 3. Signing certificate verification against currently installed host
+     */
+    fun verifyDownloadedApk(
+        context: Context,
+        apkFile: File,
+        expectedSha256: String = ""
+    ): Boolean {
+        if (!apkFile.exists()) return false
+
+        // 1. Checksum verification
+        if (expectedSha256.isNotBlank() && !verifySha256(apkFile, expectedSha256)) {
+            Log.e(TAG, "SHA-256 mismatch for APK: ${apkFile.name}")
+            apkFile.delete()
+            return false
+        }
+
+        // 2. Package name and certificate verification
+        try {
+            val pm = context.packageManager
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNATURES)
+            }
+
+            if (archiveInfo == null) {
+                Log.e(TAG, "Could not parse APK archive info: ${apkFile.name}")
+                apkFile.delete()
+                return false
+            }
+
+            if (archiveInfo.packageName != context.packageName) {
+                Log.e(TAG, "Package name mismatch! Expected: ${context.packageName}, Found: ${archiveInfo.packageName}")
+                apkFile.delete()
+                return false
+            }
+
+            val installedInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+            }
+
+            val signaturesMatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val curSign = installedInfo.signingInfo
+                val archSign = archiveInfo.signingInfo
+                if (curSign != null && archSign != null) {
+                    val curSigs = if (curSign.hasMultipleSigners()) curSign.apkContentsSigners else curSign.signingCertificateHistory
+                    val archSigs = if (archSign.hasMultipleSigners()) archSign.apkContentsSigners else archSign.signingCertificateHistory
+                    curSigs != null && archSigs != null && curSigs.any { cur ->
+                        archSigs.any { arch -> MessageDigest.isEqual(cur.toByteArray(), arch.toByteArray()) }
+                    }
+                } else false
+            } else {
+                @Suppress("DEPRECATION")
+                val curSigs = installedInfo.signatures
+                @Suppress("DEPRECATION")
+                val archSigs = archiveInfo.signatures
+                if (curSigs != null && archSigs != null) {
+                    curSigs.any { cur ->
+                        archSigs.any { arch -> MessageDigest.isEqual(cur.toByteArray(), arch.toByteArray()) }
+                    }
+                } else false
+            }
+
+            if (!signaturesMatch) {
+                Log.e(TAG, "Signature mismatch between installed app and downloaded APK!")
+                apkFile.delete()
+                return false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed verifying downloaded APK signatures: ${e.message}", e)
+            apkFile.delete()
+            return false
+        }
+
+        return true
+    }
 
     suspend fun checkForUpdate(): AppUpdateInfo? = withContext(Dispatchers.IO) {
         try {
@@ -35,7 +168,7 @@ object UpdateManager {
             val assets = json.getAsJsonArray("assets")
 
             var downloadUrl = ""
-            var apkName = "app-debug.apk"
+            var apkName = "app-release.apk"
             var fileSize = 0L
 
             if (assets != null && assets.size() > 0) {
@@ -69,7 +202,11 @@ object UpdateManager {
             val cleanTag = tagName.removePrefix("v").trim()
             val cleanCurrent = currentVersion.removePrefix("v").trim()
 
-            // Update is available if version string differs and download URL is available
+            // Extract optional SHA-256 hash from release notes (format: SHA256: <hash>)
+            val shaRegex = Regex("""(?i)SHA-?256:\s*([a-fA-F0-9]{64})""")
+            val shaMatch = shaRegex.find(releaseNotes)
+            val sha256 = shaMatch?.groupValues?.get(1)?.lowercase() ?: ""
+
             val hasUpdate = downloadUrl.isNotEmpty() && isNewerVersion(cleanTag, cleanCurrent)
 
             AppUpdateInfo(
@@ -79,7 +216,8 @@ object UpdateManager {
                 downloadUrl = downloadUrl,
                 apkFileName = apkName,
                 releaseNotes = releaseNotes,
-                fileSizeBytes = fileSize
+                fileSizeBytes = fileSize,
+                sha256Checksum = sha256
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check for updates: ${e.message}")
@@ -108,7 +246,6 @@ object UpdateManager {
             if (parsed.isJsonArray) {
                 val array = parsed.asJsonArray
                 if (array.size() == 0) return null
-                // Find first release containing an apk asset
                 var chosen: com.google.gson.JsonObject? = null
                 for (i in 0 until array.size()) {
                     val item = array.get(i).asJsonObject
@@ -151,45 +288,72 @@ object UpdateManager {
         return remote != current
     }
 
+    /**
+     * Downloads APK into secure internal cache directory (SEC-04).
+     * Validates HTTPS scheme and prevents insecure HTTP downgrade redirects.
+     */
     suspend fun downloadApk(
         context: Context,
         downloadUrl: String,
         onProgress: (Int) -> Unit
     ): File? = withContext(Dispatchers.IO) {
         try {
-            val updatesDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "updates")
+            if (!isTrustedUpdateUrl(downloadUrl)) {
+                throw SecurityException("Insecure or untrusted download URL: $downloadUrl")
+            }
+
+            val updatesDir = File(context.cacheDir, "updates")
             if (!updatesDir.exists()) updatesDir.mkdirs()
 
             val apkFile = File(updatesDir, "stealth_update.apk")
             if (apkFile.exists()) apkFile.delete()
 
-            val url = URL(downloadUrl)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15000
-                readTimeout = 15000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "StealthSandbox-App")
-            }
+            var currentUrl = downloadUrl
+            var connection: HttpURLConnection
+            var redirectCount = 0
+            val maxRedirects = 5
 
-            // Handle redirect if needed
-            val responseCode = connection.responseCode
-            val finalConnection = if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
-                responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
-                responseCode == 307 || responseCode == 308) {
-                val newUrl = connection.getHeaderField("Location")
-                (URL(newUrl).openConnection() as HttpURLConnection).apply {
+            while (true) {
+                val url = URL(currentUrl)
+                connection = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15000
                     readTimeout = 15000
+                    instanceFollowRedirects = false
                     setRequestProperty("User-Agent", "StealthSandbox-App")
                 }
-            } else {
-                connection
+
+                val responseCode = connection.responseCode
+                if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
+                    responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    responseCode == 307 || responseCode == 308) {
+
+                    val newUrl = connection.getHeaderField("Location")
+                        ?: throw SecurityException("Missing redirect Location header")
+
+                    val resolvedNewUrl = URL(url, newUrl).toString()
+                    if (!isTrustedUpdateUrl(resolvedNewUrl)) {
+                        throw SecurityException("Insecure or untrusted redirect URL: $resolvedNewUrl")
+                    }
+
+                    connection.disconnect()
+                    currentUrl = resolvedNewUrl
+                    redirectCount++
+                    if (redirectCount > maxRedirects) {
+                        throw SecurityException("Too many redirects while downloading update")
+                    }
+                    continue
+                } else if (responseCode == HttpURLConnection.HTTP_OK) {
+                    break
+                } else {
+                    Log.w(TAG, "Download failed with HTTP status code: $responseCode")
+                    return@withContext null
+                }
             }
 
-            val totalSize = finalConnection.contentLength
+            val totalSize = connection.contentLength
             var downloaded = 0L
 
-            finalConnection.inputStream.use { input ->
+            connection.inputStream.use { input ->
                 FileOutputStream(apkFile).use { output ->
                     val buffer = ByteArray(8 * 1024)
                     var read: Int
@@ -212,9 +376,14 @@ object UpdateManager {
         }
     }
 
-    fun installApk(context: Context, apkFile: File) {
+    fun installApk(context: Context, apkFile: File, expectedSha256: String = "") {
         if (!apkFile.exists()) {
             Log.e(TAG, "APK file does not exist: ${apkFile.absolutePath}")
+            return
+        }
+
+        if (!verifyDownloadedApk(context, apkFile, expectedSha256)) {
+            Log.e(TAG, "APK verification failed; installation aborted.")
             return
         }
 

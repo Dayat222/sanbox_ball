@@ -38,7 +38,7 @@
                 android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.3.0-release • Periksa Pembaruan"
+                android:text="v1.4.0-release • Periksa Pembaruan"
                 android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
