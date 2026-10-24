@@ -47,6 +47,9 @@ class ContainerContext(
 
     override fun getPackageName(): String = targetPackageName
 
+    // FIX-02: Prevent leaking sandbox host identity (com.sandbox.ball) when target app calls getApplicationContext()
+    override fun getApplicationContext(): Context = this
+
     override fun getDataDir(): File = containerDataDir
 
     override fun getFilesDir(): File = filesDirFile

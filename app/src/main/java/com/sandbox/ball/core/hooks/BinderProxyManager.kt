@@ -18,13 +18,23 @@ object BinderProxyManager {
     private const val TAG = "BinderProxyManager"
     private var isHooked = false
 
+    @Volatile
+    private var currentProfile: HardwareProfile = HardwareProfile()
+
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     fun install(profile: HardwareProfile, targetPkg: String? = null) {
-        if (isHooked) return
+        // FIX-01: Always update currentProfile so that 1-Click Reset / profile rotation
+        // immediately propagates to all IPC proxies without locking stale values.
+        currentProfile = profile
+
+        if (isHooked) {
+            Log.i(TAG, "BinderProxyManager: Updated active profile to ${profile.model} (IMEI: ${profile.imei})")
+            return
+        }
 
         try {
-            hookPackageManager(profile, targetPkg)
-            hookServiceManager(profile)
+            hookPackageManager(targetPkg)
+            hookServiceManager()
             isHooked = true
             Log.i(TAG, "BinderProxyManager: All IPC binder proxies successfully installed")
         } catch (e: Exception) {
@@ -32,8 +42,15 @@ object BinderProxyManager {
         }
     }
 
+    fun updateProfile(profile: HardwareProfile) {
+        currentProfile = profile
+        Log.i(TAG, "BinderProxyManager profile updated dynamically: ${profile.model}")
+    }
+
+    fun getActiveProfile(): HardwareProfile = currentProfile
+
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun hookPackageManager(profile: HardwareProfile, targetPkg: String?) {
+    private fun hookPackageManager(targetPkg: String?) {
         try {
             val activityThreadClass = Class.forName("android.app.ActivityThread")
             val getPackageManagerMethod = activityThreadClass.getDeclaredMethod("getPackageManager")
@@ -60,7 +77,7 @@ object BinderProxyManager {
 
     @Suppress("UNCHECKED_CAST")
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun hookServiceManager(profile: HardwareProfile) {
+    private fun hookServiceManager() {
         try {
             val smClass = Class.forName("android.os.ServiceManager")
             val sCacheField = smClass.getDeclaredField("sCache")
@@ -69,12 +86,12 @@ object BinderProxyManager {
 
             // Hook telephony service
             hookServiceBinder(smClass, sCache, "phone") { realBinder ->
-                createTelephonyProxyBinder(realBinder, profile)
+                createTelephonyProxyBinder(realBinder)
             }
 
             // Hook iphonesubinfo service
             hookServiceBinder(smClass, sCache, "iphonesubinfo") { realBinder ->
-                createPhoneSubInfoProxyBinder(realBinder, profile)
+                createPhoneSubInfoProxyBinder(realBinder)
             }
 
             // Hook package manager service
@@ -82,9 +99,9 @@ object BinderProxyManager {
                 createPackageManagerProxyBinder(realBinder)
             }
 
-            // Hook wifi service (FIX-05)
+            // Hook wifi service
             hookServiceBinder(smClass, sCache, "wifi") { realBinder ->
-                createWifiProxyBinder(realBinder, profile)
+                createWifiProxyBinder(realBinder)
             }
 
         } catch (e: Exception) {
@@ -131,7 +148,7 @@ object BinderProxyManager {
         ) as IBinder
     }
 
-    private fun createTelephonyProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+    private fun createTelephonyProxyBinder(realBinder: IBinder): IBinder {
         return Proxy.newProxyInstance(
             realBinder.javaClass.classLoader,
             arrayOf(IBinder::class.java),
@@ -139,7 +156,7 @@ object BinderProxyManager {
                 if (method.name == "queryLocalInterface") {
                     val descriptor = args?.getOrNull(0) as? String
                     if (descriptor?.contains("ITelephony") == true) {
-                        return@InvocationHandler createTelephonyInterfaceProxy(realBinder, descriptor, profile)
+                        return@InvocationHandler createTelephonyInterfaceProxy(realBinder, descriptor)
                     }
                 }
                 invokeReal(realBinder, method, args)
@@ -147,7 +164,7 @@ object BinderProxyManager {
         ) as IBinder
     }
 
-    private fun createPhoneSubInfoProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+    private fun createPhoneSubInfoProxyBinder(realBinder: IBinder): IBinder {
         return Proxy.newProxyInstance(
             realBinder.javaClass.classLoader,
             arrayOf(IBinder::class.java),
@@ -155,7 +172,7 @@ object BinderProxyManager {
                 if (method.name == "queryLocalInterface") {
                     val descriptor = args?.getOrNull(0) as? String
                     if (descriptor?.contains("IPhoneSubInfo") == true) {
-                        return@InvocationHandler createPhoneSubInfoInterfaceProxy(realBinder, descriptor, profile)
+                        return@InvocationHandler createPhoneSubInfoInterfaceProxy(realBinder, descriptor)
                     }
                 }
                 invokeReal(realBinder, method, args)
@@ -163,7 +180,7 @@ object BinderProxyManager {
         ) as IBinder
     }
 
-    private fun createWifiProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+    private fun createWifiProxyBinder(realBinder: IBinder): IBinder {
         return Proxy.newProxyInstance(
             realBinder.javaClass.classLoader,
             arrayOf(IBinder::class.java),
@@ -171,7 +188,7 @@ object BinderProxyManager {
                 if (method.name == "queryLocalInterface") {
                     val descriptor = args?.getOrNull(0) as? String
                     if (descriptor?.contains("IWifiManager") == true) {
-                        return@InvocationHandler createWifiInterfaceProxy(realBinder, descriptor, profile)
+                        return@InvocationHandler createWifiInterfaceProxy(realBinder, descriptor)
                     }
                 }
                 invokeReal(realBinder, method, args)
@@ -181,8 +198,7 @@ object BinderProxyManager {
 
     private fun createTelephonyInterfaceProxy(
         realBinder: IBinder,
-        descriptor: String,
-        profile: HardwareProfile
+        descriptor: String
     ): Any {
         val targetInterface = try {
             Class.forName(descriptor)
@@ -195,6 +211,8 @@ object BinderProxyManager {
             targetInterface.classLoader,
             arrayOf(targetInterface, IInterface::class.java),
             InvocationHandler { _, method, args ->
+                // Dynamically evaluate currentProfile (FIX-01)
+                val profile = currentProfile
                 when (method.name) {
                     "getDeviceId", "getDeviceIdWithFeature", "getImeiForSlot" -> profile.imei
                     "getMeid", "getMeidForSlot" -> profile.meid
@@ -212,8 +230,7 @@ object BinderProxyManager {
 
     private fun createPhoneSubInfoInterfaceProxy(
         realBinder: IBinder,
-        descriptor: String,
-        profile: HardwareProfile
+        descriptor: String
     ): Any {
         val targetInterface = try {
             Class.forName(descriptor)
@@ -226,6 +243,8 @@ object BinderProxyManager {
             targetInterface.classLoader,
             arrayOf(targetInterface, IInterface::class.java),
             InvocationHandler { _, method, args ->
+                // Dynamically evaluate currentProfile (FIX-01)
+                val profile = currentProfile
                 when (method.name) {
                     "getDeviceId", "getDeviceIdForPhone" -> profile.imei
                     "getImeiForSubscriber" -> profile.imei
@@ -241,8 +260,7 @@ object BinderProxyManager {
 
     private fun createWifiInterfaceProxy(
         realBinder: IBinder,
-        descriptor: String,
-        profile: HardwareProfile
+        descriptor: String
     ): Any {
         val targetInterface = try {
             Class.forName(descriptor)
@@ -255,6 +273,8 @@ object BinderProxyManager {
             targetInterface.classLoader,
             arrayOf(targetInterface, IInterface::class.java),
             InvocationHandler { _, method, args ->
+                // Dynamically evaluate currentProfile (FIX-01)
+                val profile = currentProfile
                 when (method.name) {
                     "getConnectionInfo" -> {
                         val realInfo = invokeReal(realInterface ?: realBinder, method, args)
@@ -310,7 +330,7 @@ object BinderProxyManager {
                 }
             }
 
-            // Filter package lists (FIX-05)
+            // Filter package lists
             if (methodName == "getInstalledPackages") {
                 val raw = invokeReal(realObject, method, args) ?: return null
                 return filterParceledOrList(raw) { list ->

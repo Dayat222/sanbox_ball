@@ -73,14 +73,12 @@ class StubActivity : Activity() {
             targetPackage?.let { pkg ->
                 val path = apkPath
                 try {
-                    // 1. Resolve main launch activity from container's base.apk directly (FIX-04)
-                    var launchActivityName: String? = null
-                    if (path != null) {
+                    // FIX-03: Prioritize official launch intent resolution first to avoid picking
+                    // secondary AdActivity or SDK login activities from the archive activities list.
+                    var launchActivityName: String? = packageManager.getLaunchIntentForPackage(pkg)?.component?.className
+                    if (launchActivityName == null && path != null) {
                         val archiveInfo = packageManager.getPackageArchiveInfo(path, PackageManager.GET_ACTIVITIES)
                         launchActivityName = archiveInfo?.activities?.firstOrNull()?.name
-                    }
-                    if (launchActivityName == null) {
-                        launchActivityName = packageManager.getLaunchIntentForPackage(pkg)?.component?.className
                     }
 
                     if (launchActivityName != null) {

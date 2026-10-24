@@ -73,8 +73,9 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
         if (targetPkg != null && intentPkg == targetPkg && component != null) {
             val realClassName = component.className
             intent.putExtra(EXTRA_REAL_ACTIVITY, realClassName)
-            intent.setClass(who ?: (target as Context), StubActivity::class.java)
-            Log.i(TAG, "execStartActivity wrapped: $realClassName into :container process")
+            intent.putExtra(StubActivity.EXTRA_PACKAGE_NAME, targetPkg)
+            intent.setClassName("com.sandbox.ball", StubActivity::class.java.name)
+            Log.i(TAG, "execStartActivity wrapped: $realClassName into :container process com.sandbox.ball")
         }
 
         return try {

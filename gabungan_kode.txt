@@ -1,7 +1,7 @@
 ﻿================================================================================
 PROJECT: Stealth Sandbox Engine (sanbox_ball)
-VERSION: v1.2.0-release (PRD3 Comprehensive Architecture & Native Stability)
-DATE EXPORTED: 2026-10-24 11:12:31
+VERSION: v1.3.0-release (PRD Container Isolation, Dynamic Proxy State Sync & Native Build)
+DATE EXPORTED: 2026-10-24 11:30:00
 ================================================================================
 
 ================================================================================
@@ -96,8 +96,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.2.0-release"
+        versionCode = 6
+        versionName = "1.3.0-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -1455,6 +1455,9 @@ class ContainerContext(
 
     override fun getPackageName(): String = targetPackageName
 
+    // FIX-02: Prevent leaking sandbox host identity (com.sandbox.ball) when target app calls getApplicationContext()
+    override fun getApplicationContext(): Context = this
+
     override fun getDataDir(): File = containerDataDir
 
     override fun getFilesDir(): File = filesDirFile
@@ -1569,8 +1572,9 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
         if (targetPkg != null && intentPkg == targetPkg && component != null) {
             val realClassName = component.className
             intent.putExtra(EXTRA_REAL_ACTIVITY, realClassName)
-            intent.setClass(who ?: (target as Context), StubActivity::class.java)
-            Log.i(TAG, "execStartActivity wrapped: $realClassName into :container process")
+            intent.putExtra(StubActivity.EXTRA_PACKAGE_NAME, targetPkg)
+            intent.setClassName("com.sandbox.ball", StubActivity::class.java.name)
+            Log.i(TAG, "execStartActivity wrapped: $realClassName into :container process com.sandbox.ball")
         }
 
         return try {
@@ -1792,14 +1796,12 @@ class StubActivity : Activity() {
             targetPackage?.let { pkg ->
                 val path = apkPath
                 try {
-                    // 1. Resolve main launch activity from container's base.apk directly (FIX-04)
-                    var launchActivityName: String? = null
-                    if (path != null) {
+                    // FIX-03: Prioritize official launch intent resolution first to avoid picking
+                    // secondary AdActivity or SDK login activities from the archive activities list.
+                    var launchActivityName: String? = packageManager.getLaunchIntentForPackage(pkg)?.component?.className
+                    if (launchActivityName == null && path != null) {
                         val archiveInfo = packageManager.getPackageArchiveInfo(path, PackageManager.GET_ACTIVITIES)
                         launchActivityName = archiveInfo?.activities?.firstOrNull()?.name
-                    }
-                    if (launchActivityName == null) {
-                        launchActivityName = packageManager.getLaunchIntentForPackage(pkg)?.component?.className
                     }
 
                     if (launchActivityName != null) {
@@ -2026,13 +2028,23 @@ object BinderProxyManager {
     private const val TAG = "BinderProxyManager"
     private var isHooked = false
 
+    @Volatile
+    private var currentProfile: HardwareProfile = HardwareProfile()
+
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     fun install(profile: HardwareProfile, targetPkg: String? = null) {
-        if (isHooked) return
+        // FIX-01: Always update currentProfile so that 1-Click Reset / profile rotation
+        // immediately propagates to all IPC proxies without locking stale values.
+        currentProfile = profile
+
+        if (isHooked) {
+            Log.i(TAG, "BinderProxyManager: Updated active profile to ${profile.model} (IMEI: ${profile.imei})")
+            return
+        }
 
         try {
-            hookPackageManager(profile, targetPkg)
-            hookServiceManager(profile)
+            hookPackageManager(targetPkg)
+            hookServiceManager()
             isHooked = true
             Log.i(TAG, "BinderProxyManager: All IPC binder proxies successfully installed")
         } catch (e: Exception) {
@@ -2040,8 +2052,15 @@ object BinderProxyManager {
         }
     }
 
+    fun updateProfile(profile: HardwareProfile) {
+        currentProfile = profile
+        Log.i(TAG, "BinderProxyManager profile updated dynamically: ${profile.model}")
+    }
+
+    fun getActiveProfile(): HardwareProfile = currentProfile
+
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun hookPackageManager(profile: HardwareProfile, targetPkg: String?) {
+    private fun hookPackageManager(targetPkg: String?) {
         try {
             val activityThreadClass = Class.forName("android.app.ActivityThread")
             val getPackageManagerMethod = activityThreadClass.getDeclaredMethod("getPackageManager")
@@ -2068,7 +2087,7 @@ object BinderProxyManager {
 
     @Suppress("UNCHECKED_CAST")
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun hookServiceManager(profile: HardwareProfile) {
+    private fun hookServiceManager() {
         try {
             val smClass = Class.forName("android.os.ServiceManager")
             val sCacheField = smClass.getDeclaredField("sCache")
@@ -2077,12 +2096,12 @@ object BinderProxyManager {
 
             // Hook telephony service
             hookServiceBinder(smClass, sCache, "phone") { realBinder ->
-                createTelephonyProxyBinder(realBinder, profile)
+                createTelephonyProxyBinder(realBinder)
             }
 
             // Hook iphonesubinfo service
             hookServiceBinder(smClass, sCache, "iphonesubinfo") { realBinder ->
-                createPhoneSubInfoProxyBinder(realBinder, profile)
+                createPhoneSubInfoProxyBinder(realBinder)
             }
 
             // Hook package manager service
@@ -2090,9 +2109,9 @@ object BinderProxyManager {
                 createPackageManagerProxyBinder(realBinder)
             }
 
-            // Hook wifi service (FIX-05)
+            // Hook wifi service
             hookServiceBinder(smClass, sCache, "wifi") { realBinder ->
-                createWifiProxyBinder(realBinder, profile)
+                createWifiProxyBinder(realBinder)
             }
 
         } catch (e: Exception) {
@@ -2139,7 +2158,7 @@ object BinderProxyManager {
         ) as IBinder
     }
 
-    private fun createTelephonyProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+    private fun createTelephonyProxyBinder(realBinder: IBinder): IBinder {
         return Proxy.newProxyInstance(
             realBinder.javaClass.classLoader,
             arrayOf(IBinder::class.java),
@@ -2147,7 +2166,7 @@ object BinderProxyManager {
                 if (method.name == "queryLocalInterface") {
                     val descriptor = args?.getOrNull(0) as? String
                     if (descriptor?.contains("ITelephony") == true) {
-                        return@InvocationHandler createTelephonyInterfaceProxy(realBinder, descriptor, profile)
+                        return@InvocationHandler createTelephonyInterfaceProxy(realBinder, descriptor)
                     }
                 }
                 invokeReal(realBinder, method, args)
@@ -2155,7 +2174,7 @@ object BinderProxyManager {
         ) as IBinder
     }
 
-    private fun createPhoneSubInfoProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+    private fun createPhoneSubInfoProxyBinder(realBinder: IBinder): IBinder {
         return Proxy.newProxyInstance(
             realBinder.javaClass.classLoader,
             arrayOf(IBinder::class.java),
@@ -2163,7 +2182,7 @@ object BinderProxyManager {
                 if (method.name == "queryLocalInterface") {
                     val descriptor = args?.getOrNull(0) as? String
                     if (descriptor?.contains("IPhoneSubInfo") == true) {
-                        return@InvocationHandler createPhoneSubInfoInterfaceProxy(realBinder, descriptor, profile)
+                        return@InvocationHandler createPhoneSubInfoInterfaceProxy(realBinder, descriptor)
                     }
                 }
                 invokeReal(realBinder, method, args)
@@ -2171,7 +2190,7 @@ object BinderProxyManager {
         ) as IBinder
     }
 
-    private fun createWifiProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+    private fun createWifiProxyBinder(realBinder: IBinder): IBinder {
         return Proxy.newProxyInstance(
             realBinder.javaClass.classLoader,
             arrayOf(IBinder::class.java),
@@ -2179,7 +2198,7 @@ object BinderProxyManager {
                 if (method.name == "queryLocalInterface") {
                     val descriptor = args?.getOrNull(0) as? String
                     if (descriptor?.contains("IWifiManager") == true) {
-                        return@InvocationHandler createWifiInterfaceProxy(realBinder, descriptor, profile)
+                        return@InvocationHandler createWifiInterfaceProxy(realBinder, descriptor)
                     }
                 }
                 invokeReal(realBinder, method, args)
@@ -2189,8 +2208,7 @@ object BinderProxyManager {
 
     private fun createTelephonyInterfaceProxy(
         realBinder: IBinder,
-        descriptor: String,
-        profile: HardwareProfile
+        descriptor: String
     ): Any {
         val targetInterface = try {
             Class.forName(descriptor)
@@ -2203,6 +2221,8 @@ object BinderProxyManager {
             targetInterface.classLoader,
             arrayOf(targetInterface, IInterface::class.java),
             InvocationHandler { _, method, args ->
+                // Dynamically evaluate currentProfile (FIX-01)
+                val profile = currentProfile
                 when (method.name) {
                     "getDeviceId", "getDeviceIdWithFeature", "getImeiForSlot" -> profile.imei
                     "getMeid", "getMeidForSlot" -> profile.meid
@@ -2220,8 +2240,7 @@ object BinderProxyManager {
 
     private fun createPhoneSubInfoInterfaceProxy(
         realBinder: IBinder,
-        descriptor: String,
-        profile: HardwareProfile
+        descriptor: String
     ): Any {
         val targetInterface = try {
             Class.forName(descriptor)
@@ -2234,6 +2253,8 @@ object BinderProxyManager {
             targetInterface.classLoader,
             arrayOf(targetInterface, IInterface::class.java),
             InvocationHandler { _, method, args ->
+                // Dynamically evaluate currentProfile (FIX-01)
+                val profile = currentProfile
                 when (method.name) {
                     "getDeviceId", "getDeviceIdForPhone" -> profile.imei
                     "getImeiForSubscriber" -> profile.imei
@@ -2249,8 +2270,7 @@ object BinderProxyManager {
 
     private fun createWifiInterfaceProxy(
         realBinder: IBinder,
-        descriptor: String,
-        profile: HardwareProfile
+        descriptor: String
     ): Any {
         val targetInterface = try {
             Class.forName(descriptor)
@@ -2263,6 +2283,8 @@ object BinderProxyManager {
             targetInterface.classLoader,
             arrayOf(targetInterface, IInterface::class.java),
             InvocationHandler { _, method, args ->
+                // Dynamically evaluate currentProfile (FIX-01)
+                val profile = currentProfile
                 when (method.name) {
                     "getConnectionInfo" -> {
                         val realInfo = invokeReal(realInterface ?: realBinder, method, args)
@@ -2318,7 +2340,7 @@ object BinderProxyManager {
                 }
             }
 
-            // Filter package lists (FIX-05)
+            // Filter package lists
             if (methodName == "getInstalledPackages") {
                 val raw = invokeReal(realObject, method, args) ?: return null
                 return filterParceledOrList(raw) { list ->
@@ -4764,7 +4786,7 @@ FILE: app\src\main\res\layout\activity_main.xml
                 android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.2.0-release • Periksa Pembaruan"
+                android:text="v1.3.0-release • Periksa Pembaruan"
                 android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -5804,6 +5826,7 @@ package com.sandbox.ball
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.provider.Settings
+import com.sandbox.ball.core.hooks.BinderProxyManager
 import com.sandbox.ball.core.hooks.PackageManagerHook
 import com.sandbox.ball.core.hooks.SettingsSecureHook
 import com.sandbox.ball.core.hooks.WifiHook
@@ -5891,6 +5914,19 @@ class BinderProxyManagerTest {
         assertTrue(filtered.any { it.packageName == "com.miniclip.eightballpool" })
         assertTrue(filtered.any { it.packageName == "com.android.vending" })
         assertFalse(filtered.any { it.packageName == "com.topjohnwu.magisk" })
+    }
+
+    @Test
+    fun testDynamicProfileUpdateInBinderProxyManager() {
+        val initialProfile = HardwareProfile(imei = "358941209847192", model = "SM-S928B")
+        BinderProxyManager.install(initialProfile)
+        assertEquals("358941209847192", BinderProxyManager.getActiveProfile().imei)
+
+        // 1-Click Reset generates a new profile and updates BinderProxyManager (FIX-01)
+        val rotatedProfile = HardwareProfile(imei = "359999999999999", model = "Pixel 8 Pro")
+        BinderProxyManager.install(rotatedProfile)
+        assertEquals("359999999999999", BinderProxyManager.getActiveProfile().imei)
+        assertEquals("Pixel 8 Pro", BinderProxyManager.getActiveProfile().model)
     }
 }
 

@@ -3,6 +3,7 @@ package com.sandbox.ball
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.provider.Settings
+import com.sandbox.ball.core.hooks.BinderProxyManager
 import com.sandbox.ball.core.hooks.PackageManagerHook
 import com.sandbox.ball.core.hooks.SettingsSecureHook
 import com.sandbox.ball.core.hooks.WifiHook
@@ -90,5 +91,18 @@ class BinderProxyManagerTest {
         assertTrue(filtered.any { it.packageName == "com.miniclip.eightballpool" })
         assertTrue(filtered.any { it.packageName == "com.android.vending" })
         assertFalse(filtered.any { it.packageName == "com.topjohnwu.magisk" })
+    }
+
+    @Test
+    fun testDynamicProfileUpdateInBinderProxyManager() {
+        val initialProfile = HardwareProfile(imei = "358941209847192", model = "SM-S928B")
+        BinderProxyManager.install(initialProfile)
+        assertEquals("358941209847192", BinderProxyManager.getActiveProfile().imei)
+
+        // 1-Click Reset generates a new profile and updates BinderProxyManager (FIX-01)
+        val rotatedProfile = HardwareProfile(imei = "359999999999999", model = "Pixel 8 Pro")
+        BinderProxyManager.install(rotatedProfile)
+        assertEquals("359999999999999", BinderProxyManager.getActiveProfile().imei)
+        assertEquals("Pixel 8 Pro", BinderProxyManager.getActiveProfile().model)
     }
 }
