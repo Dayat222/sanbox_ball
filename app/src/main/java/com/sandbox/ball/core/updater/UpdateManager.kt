@@ -20,27 +20,15 @@ import java.net.URL
 
 object UpdateManager {
     private const val TAG = "UpdateManager"
-    private const val GITHUB_REPO_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases/latest"
+    private const val GITHUB_REPO_RELEASES_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases"
+    private const val GITHUB_REPO_LATEST_API = "https://api.github.com/repos/Dayat222/sanbox_ball/releases/latest"
     private val mainHandler = Handler(Looper.getMainLooper())
 
     suspend fun checkForUpdate(): AppUpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val url = URL(GITHUB_REPO_API)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 8000
-                readTimeout = 8000
-                setRequestProperty("Accept", "application/vnd.github.v3+json")
-                setRequestProperty("User-Agent", "StealthSandbox-App")
-            }
-
-            if (connection.responseCode != 200) {
-                Log.w(TAG, "GitHub API returned response code: ${connection.responseCode}")
-                return@withContext null
-            }
-
-            val responseText = connection.inputStream.bufferedReader().use { it.readText() }
-            val json = JsonParser.parseString(responseText).asJsonObject
+            val json = fetchReleaseJson(GITHUB_REPO_RELEASES_API) 
+                ?: fetchReleaseJson(GITHUB_REPO_LATEST_API)
+                ?: return@withContext null
 
             val tagName = json.get("tag_name")?.asString ?: ""
             val releaseNotes = json.get("body")?.asString ?: "Perbaikan bug dan peningkatan sistem stealth."
@@ -81,6 +69,55 @@ object UpdateManager {
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check for updates: ${e.message}")
+            null
+        }
+    }
+
+    private fun fetchReleaseJson(apiUrl: String): com.google.gson.JsonObject? {
+        return try {
+            val url = URL(apiUrl)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Accept", "application/vnd.github.v3+json")
+                setRequestProperty("User-Agent", "StealthSandbox-App")
+            }
+
+            if (connection.responseCode != 200) {
+                Log.w(TAG, "GitHub API $apiUrl returned code: ${connection.responseCode}")
+                return null
+            }
+
+            val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+            val parsed = JsonParser.parseString(responseText)
+            if (parsed.isJsonArray) {
+                val array = parsed.asJsonArray
+                if (array.size() == 0) return null
+                // Find first release containing an apk asset
+                var chosen: com.google.gson.JsonObject? = null
+                for (i in 0 until array.size()) {
+                    val item = array.get(i).asJsonObject
+                    val assets = item.getAsJsonArray("assets")
+                    if (assets != null) {
+                        for (j in 0 until assets.size()) {
+                            val assetName = assets.get(j).asJsonObject.get("name")?.asString ?: ""
+                            if (assetName.endsWith(".apk", ignoreCase = true)) {
+                                chosen = item
+                                break
+                            }
+                        }
+                    }
+                    if (chosen != null) break
+                }
+                chosen ?: array.get(0).asJsonObject
+            } else if (parsed.isJsonObject) {
+                parsed.asJsonObject
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error fetching from $apiUrl: ${e.message}")
             null
         }
     }
