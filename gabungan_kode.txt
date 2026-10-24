@@ -1,11 +1,12 @@
 ﻿================================================================================
 PROJECT: Stealth Sandbox Engine (sanbox_ball)
 VERSION: v1.3.0-release (PRD Container Isolation, Dynamic Proxy State Sync & Native Build)
-DATE EXPORTED: 2026-10-24 11:30:00
+DATE EXPORTED: 2026-10-24 14:01:21
+TOTAL FILES: 80 tracked files
 ================================================================================
 
 ================================================================================
-FILE: .github\workflows\build.yml
+FILE: .github/workflows/build.yml
 ================================================================================
 name: Stealth Sandbox Engine CI/CD
 
@@ -80,7 +81,26 @@ jobs:
 
 
 ================================================================================
-FILE: app\build.gradle.kts
+FILE: .gitignore
+================================================================================
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+build/
+*/build/
+app/build/
+.cxx/
+app/.cxx/
+/captures
+.externalNativeBuild
+*.apk
+*.aab
+
+
+================================================================================
+FILE: app/build.gradle.kts
 ================================================================================
 plugins {
     id("com.android.application")
@@ -183,7 +203,7 @@ dependencies {
 
 
 ================================================================================
-FILE: app\proguard-rules.pro
+FILE: app/proguard-rules.pro
 ================================================================================
 # ProGuard rules for Stealth Sandbox Engine (sanbox_ball)
 
@@ -209,7 +229,7 @@ FILE: app\proguard-rules.pro
 
 
 ================================================================================
-FILE: app\src\main\AndroidManifest.xml
+FILE: app/src/main/AndroidManifest.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -281,7 +301,48 @@ FILE: app\src\main\AndroidManifest.xml
 
 
 ================================================================================
-FILE: app\src\main\cpp\hook\syscall_hook.cpp
+FILE: app/src/main/cpp/CMakeLists.txt
+================================================================================
+cmake_minimum_required(VERSION 3.22.1)
+
+project("stealth_engine")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/vfs
+    ${CMAKE_CURRENT_SOURCE_DIR}/hook
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils
+)
+
+add_library(
+    stealth_engine
+    SHARED
+    stealth_engine.cpp
+    vfs/vfs_core.cpp
+    hook/syscall_hook.cpp
+)
+
+target_compile_options(stealth_engine PRIVATE
+    -fvisibility=hidden
+    $<$<CONFIG:Release>:-Oz>
+)
+
+find_library(log-lib log)
+find_library(android-lib android)
+
+target_link_libraries(
+    stealth_engine
+    ${log-lib}
+    ${android-lib}
+    dl
+)
+
+
+================================================================================
+FILE: app/src/main/cpp/hook/syscall_hook.cpp
 ================================================================================
 #include "syscall_hook.h"
 #include "../vfs/vfs_core.h"
@@ -678,7 +739,7 @@ int stealth_uninstall_hooks() {
 
 
 ================================================================================
-FILE: app\src\main\cpp\hook\syscall_hook.h
+FILE: app/src/main/cpp/hook/syscall_hook.h
 ================================================================================
 #ifndef STEALTH_SYSCALL_HOOK_H
 #define STEALTH_SYSCALL_HOOK_H
@@ -718,7 +779,7 @@ long hooked_ptrace(int request, pid_t pid, void* addr, void* data);
 
 
 ================================================================================
-FILE: app\src\main\cpp\stealth_engine.cpp
+FILE: app/src/main/cpp/stealth_engine.cpp
 ================================================================================
 #include "stealth_engine.h"
 #include "vfs/vfs_core.h"
@@ -843,7 +904,7 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
 
 
 ================================================================================
-FILE: app\src\main\cpp\stealth_engine.h
+FILE: app/src/main/cpp/stealth_engine.h
 ================================================================================
 #ifndef STEALTH_ENGINE_H
 #define STEALTH_ENGINE_H
@@ -900,7 +961,7 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
 
 
 ================================================================================
-FILE: app\src\main\cpp\utils\log.h
+FILE: app/src/main/cpp/utils/log.h
 ================================================================================
 #ifndef STEALTH_LOG_H
 #define STEALTH_LOG_H
@@ -918,7 +979,7 @@ FILE: app\src\main\cpp\utils\log.h
 
 
 ================================================================================
-FILE: app\src\main\cpp\vfs\vfs_core.cpp
+FILE: app/src/main/cpp/vfs/vfs_core.cpp
 ================================================================================
 #include "vfs_core.h"
 #include "../utils/log.h"
@@ -1162,7 +1223,7 @@ std::string VfsCore::getSpoofedStatusFile() {
 
 
 ================================================================================
-FILE: app\src\main\cpp\vfs\vfs_core.h
+FILE: app/src/main/cpp/vfs/vfs_core.h
 ================================================================================
 #ifndef STEALTH_VFS_CORE_H
 #define STEALTH_VFS_CORE_H
@@ -1232,7 +1293,7 @@ private:
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\container\AppContainer.kt
+FILE: app/src/main/java/com/sandbox/ball/core/container/AppContainer.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
@@ -1404,7 +1465,7 @@ class AppContainer(private val context: Context) {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\container\ContainerContext.kt
+FILE: app/src/main/java/com/sandbox/ball/core/container/ContainerContext.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
@@ -1495,7 +1556,7 @@ class ContainerContext(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\container\ContainerInstrumentation.kt
+FILE: app/src/main/java/com/sandbox/ball/core/container/ContainerInstrumentation.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
@@ -1654,7 +1715,7 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\container\NativeLibExtractor.kt
+FILE: app/src/main/java/com/sandbox/ball/core/container/NativeLibExtractor.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
@@ -1719,7 +1780,7 @@ object NativeLibExtractor {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\container\StubActivity.kt
+FILE: app/src/main/java/com/sandbox/ball/core/container/StubActivity.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
@@ -1891,7 +1952,7 @@ class StubActivity : Activity() {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\container\VirtualFileSystem.kt
+FILE: app/src/main/java/com/sandbox/ball/core/container/VirtualFileSystem.kt
 ================================================================================
 package com.sandbox.ball.core.container
 
@@ -1967,7 +2028,7 @@ class VirtualFileSystem(private val context: Context) {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\BatteryTelemetryHook.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/BatteryTelemetryHook.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2006,7 +2067,7 @@ object BatteryTelemetryHook {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\BinderProxyManager.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/BinderProxyManager.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2426,7 +2487,7 @@ object BinderProxyManager {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\BuildPropsHook.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/BuildPropsHook.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2475,7 +2536,7 @@ object BuildPropsHook {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\HookManager.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/HookManager.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2560,7 +2621,7 @@ class HookManager private constructor(private val context: Context) {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\PackageManagerHook.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/PackageManagerHook.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2676,7 +2737,7 @@ object PackageManagerHook {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\SettingsSecureHook.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/SettingsSecureHook.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2747,7 +2808,7 @@ object SettingsSecureHook {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\TelephonyHook.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/TelephonyHook.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2812,7 +2873,7 @@ object TelephonyHook {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\hooks\WifiHook.kt
+FILE: app/src/main/java/com/sandbox/ball/core/hooks/WifiHook.kt
 ================================================================================
 package com.sandbox.ball.core.hooks
 
@@ -2868,7 +2929,7 @@ object WifiHook {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\nativebridge\NativeBridge.kt
+FILE: app/src/main/java/com/sandbox/ball/core/nativebridge/NativeBridge.kt
 ================================================================================
 package com.sandbox.ball.core.nativebridge
 
@@ -2917,7 +2978,7 @@ object NativeBridge {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\spoofer\HardwareProfile.kt
+FILE: app/src/main/java/com/sandbox/ball/core/spoofer/HardwareProfile.kt
 ================================================================================
 package com.sandbox.ball.core.spoofer
 
@@ -2961,7 +3022,7 @@ data class HardwareProfile(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\spoofer\NetworkMockData.kt
+FILE: app/src/main/java/com/sandbox/ball/core/spoofer/NetworkMockData.kt
 ================================================================================
 package com.sandbox.ball.core.spoofer
 
@@ -2980,7 +3041,7 @@ data class NetworkMockData(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\spoofer\ProfileGenerator.kt
+FILE: app/src/main/java/com/sandbox/ball/core/spoofer/ProfileGenerator.kt
 ================================================================================
 package com.sandbox.ball.core.spoofer
 
@@ -3308,7 +3369,7 @@ object ProfileGenerator {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\spoofer\ProfileManager.kt
+FILE: app/src/main/java/com/sandbox/ball/core/spoofer/ProfileManager.kt
 ================================================================================
 package com.sandbox.ball.core.spoofer
 
@@ -3429,7 +3490,7 @@ class ProfileManager(private val context: Context) {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\updater\AppUpdateInfo.kt
+FILE: app/src/main/java/com/sandbox/ball/core/updater/AppUpdateInfo.kt
 ================================================================================
 package com.sandbox.ball.core.updater
 
@@ -3447,7 +3508,7 @@ data class AppUpdateInfo(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\core\updater\UpdateManager.kt
+FILE: app/src/main/java/com/sandbox/ball/core/updater/UpdateManager.kt
 ================================================================================
 package com.sandbox.ball.core.updater
 
@@ -3699,7 +3760,7 @@ object UpdateManager {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\model\ClonedAppInfo.kt
+FILE: app/src/main/java/com/sandbox/ball/model/ClonedAppInfo.kt
 ================================================================================
 package com.sandbox.ball.model
 
@@ -3720,7 +3781,7 @@ data class ClonedAppInfo(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\model\EvasionStatus.kt
+FILE: app/src/main/java/com/sandbox/ball/model/EvasionStatus.kt
 ================================================================================
 package com.sandbox.ball.model
 
@@ -3752,7 +3813,7 @@ data class EvasionStatus(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\model\InstalledAppInfo.kt
+FILE: app/src/main/java/com/sandbox/ball/model/InstalledAppInfo.kt
 ================================================================================
 package com.sandbox.ball.model
 
@@ -3770,7 +3831,7 @@ data class InstalledAppInfo(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\StealthApplication.kt
+FILE: app/src/main/java/com/sandbox/ball/StealthApplication.kt
 ================================================================================
 package com.sandbox.ball
 
@@ -3812,7 +3873,7 @@ class StealthApplication : Application() {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\ui\adapter\ClonedAppAdapter.kt
+FILE: app/src/main/java/com/sandbox/ball/ui/adapter/ClonedAppAdapter.kt
 ================================================================================
 package com.sandbox.ball.ui.adapter
 
@@ -3881,7 +3942,7 @@ class ClonedAppAdapter(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\ui\adapter\InstalledAppAdapter.kt
+FILE: app/src/main/java/com/sandbox/ball/ui/adapter/InstalledAppAdapter.kt
 ================================================================================
 package com.sandbox.ball.ui.adapter
 
@@ -3952,7 +4013,7 @@ class InstalledAppAdapter(
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\ui\AppClonerActivity.kt
+FILE: app/src/main/java/com/sandbox/ball/ui/AppClonerActivity.kt
 ================================================================================
 package com.sandbox.ball.ui
 
@@ -4117,7 +4178,7 @@ class AppClonerActivity : AppCompatActivity() {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\ui\MainActivity.kt
+FILE: app/src/main/java/com/sandbox/ball/ui/MainActivity.kt
 ================================================================================
 package com.sandbox.ball.ui
 
@@ -4376,7 +4437,7 @@ class MainActivity : AppCompatActivity() {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\ui\ProfileDetailActivity.kt
+FILE: app/src/main/java/com/sandbox/ball/ui/ProfileDetailActivity.kt
 ================================================================================
 package com.sandbox.ball.ui
 
@@ -4508,7 +4569,7 @@ class ProfileDetailActivity : AppCompatActivity() {
 
 
 ================================================================================
-FILE: app\src\main\java\com\sandbox\ball\ui\view\StealthToast.kt
+FILE: app/src/main/java/com/sandbox/ball/ui/view/StealthToast.kt
 ================================================================================
 package com.sandbox.ball.ui.view
 
@@ -4544,7 +4605,7 @@ object StealthToast {
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\bg_badge_active.xml
+FILE: app/src/main/res/drawable/bg_badge_active.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4563,7 +4624,7 @@ FILE: app\src\main\res\drawable\bg_badge_active.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\bg_button_danger.xml
+FILE: app/src/main/res/drawable/bg_button_danger.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4574,7 +4635,7 @@ FILE: app\src\main\res\drawable\bg_button_danger.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\bg_button_stealth.xml
+FILE: app/src/main/res/drawable/bg_button_stealth.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4585,7 +4646,7 @@ FILE: app\src\main\res\drawable\bg_button_stealth.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\bg_card.xml
+FILE: app/src/main/res/drawable/bg_card.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4599,7 +4660,7 @@ FILE: app\src\main\res\drawable\bg_card.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\bg_card_secondary.xml
+FILE: app/src/main/res/drawable/bg_card_secondary.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4613,7 +4674,7 @@ FILE: app\src\main\res\drawable\bg_card_secondary.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\bg_toast.xml
+FILE: app/src/main/res/drawable/bg_toast.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4632,7 +4693,7 @@ FILE: app\src\main\res\drawable\bg_toast.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\ic_launcher_background.xml
+FILE: app/src/main/res/drawable/ic_launcher_background.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4647,7 +4708,7 @@ FILE: app\src\main\res\drawable\ic_launcher_background.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\ic_refresh.xml
+FILE: app/src/main/res/drawable/ic_refresh.xml
 ================================================================================
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -4661,7 +4722,7 @@ FILE: app\src\main\res\drawable\ic_refresh.xml
 
 
 ================================================================================
-FILE: app\src\main\res\drawable\ic_stealth_shield.xml
+FILE: app/src/main/res/drawable/ic_stealth_shield.xml
 ================================================================================
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -4675,7 +4736,7 @@ FILE: app\src\main\res\drawable\ic_stealth_shield.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\activity_app_cloner.xml
+FILE: app/src/main/res/layout/activity_app_cloner.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4744,7 +4805,7 @@ FILE: app\src\main\res\layout\activity_app_cloner.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\activity_main.xml
+FILE: app/src/main/res/layout/activity_main.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -4991,7 +5052,7 @@ FILE: app\src\main\res\layout\activity_main.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\activity_profile_detail.xml
+FILE: app/src/main/res/layout/activity_profile_detail.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
@@ -5301,7 +5362,7 @@ FILE: app\src\main\res\layout\activity_profile_detail.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\activity_stub_container.xml
+FILE: app/src/main/res/layout/activity_stub_container.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -5389,7 +5450,7 @@ FILE: app\src\main\res\layout\activity_stub_container.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\custom_stealth_toast.xml
+FILE: app/src/main/res/layout/custom_stealth_toast.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -5419,7 +5480,7 @@ FILE: app\src\main\res\layout\custom_stealth_toast.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\dialog_app_update.xml
+FILE: app/src/main/res/layout/dialog_app_update.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -5550,7 +5611,7 @@ FILE: app\src\main\res\layout\dialog_app_update.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\item_cloned_app.xml
+FILE: app/src/main/res/layout/item_cloned_app.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -5653,7 +5714,7 @@ FILE: app\src\main\res\layout\item_cloned_app.xml
 
 
 ================================================================================
-FILE: app\src\main\res\layout\item_installed_app.xml
+FILE: app/src/main/res/layout/item_installed_app.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -5722,7 +5783,7 @@ FILE: app\src\main\res\layout\item_installed_app.xml
 
 
 ================================================================================
-FILE: app\src\main\res\mipmap-anydpi-v26\ic_launcher.xml
+FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
@@ -5732,7 +5793,7 @@ FILE: app\src\main\res\mipmap-anydpi-v26\ic_launcher.xml
 
 
 ================================================================================
-FILE: app\src\main\res\mipmap-anydpi-v26\ic_launcher_round.xml
+FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
@@ -5742,7 +5803,7 @@ FILE: app\src\main\res\mipmap-anydpi-v26\ic_launcher_round.xml
 
 
 ================================================================================
-FILE: app\src\main\res\values\colors.xml
+FILE: app/src/main/res/values/colors.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
@@ -5772,7 +5833,7 @@ FILE: app\src\main\res\values\colors.xml
 
 
 ================================================================================
-FILE: app\src\main\res\values\strings.xml
+FILE: app/src/main/res/values/strings.xml
 ================================================================================
 <resources>
     <string name="app_name">Stealth Sandbox</string>
@@ -5788,7 +5849,7 @@ FILE: app\src\main\res\values\strings.xml
 
 
 ================================================================================
-FILE: app\src\main\res\values\themes.xml
+FILE: app/src/main/res/values/themes.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
@@ -5807,7 +5868,7 @@ FILE: app\src\main\res\values\themes.xml
 
 
 ================================================================================
-FILE: app\src\main\res\xml\file_paths.xml
+FILE: app/src/main/res/xml/file_paths.xml
 ================================================================================
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
@@ -5819,7 +5880,7 @@ FILE: app\src\main\res\xml\file_paths.xml
 
 
 ================================================================================
-FILE: app\src\test\java\com\sandbox\ball\BinderProxyManagerTest.kt
+FILE: app/src/test/java/com/sandbox/ball/BinderProxyManagerTest.kt
 ================================================================================
 package com.sandbox.ball
 
@@ -5932,7 +5993,7 @@ class BinderProxyManagerTest {
 
 
 ================================================================================
-FILE: app\src\test\java\com\sandbox\ball\PackageManagerHookTest.kt
+FILE: app/src/test/java/com/sandbox/ball/PackageManagerHookTest.kt
 ================================================================================
 package com.sandbox.ball
 
@@ -5966,7 +6027,7 @@ class PackageManagerHookTest {
 
 
 ================================================================================
-FILE: app\src\test\java\com\sandbox\ball\ProfileGeneratorTest.kt
+FILE: app/src/test/java/com/sandbox/ball/ProfileGeneratorTest.kt
 ================================================================================
 package com.sandbox.ball
 
@@ -6060,7 +6121,7 @@ kotlin.code.style=official
 
 
 ================================================================================
-FILE: gradle\wrapper\gradle-wrapper.properties
+FILE: gradle/wrapper/gradle-wrapper.properties
 ================================================================================
 distributionBase=GRADLE_USER_HOME
 distributionPath=wrapper/dists
@@ -6072,9 +6133,230 @@ zipStorePath=wrapper/dists
 
 
 ================================================================================
-FILE: local.properties
+FILE: gradlew
 ================================================================================
-sdk.dir=C\:\\Users\\DAY01\\android-sdk
+#!/bin/sh
+
+#
+# Copyright 2015 the original author or authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+##############################################################################
+#
+#   Gradle start up script for POSIX generated by Gradle.
+#
+##############################################################################
+
+# Attempt to set APP_HOME
+
+# Resolve links: $0 may be a link
+app_path=$0
+
+# Need this for relative symlinks.
+while [ -h "$app_path" ]; do
+    ls=`ls -ld "$app_path"`
+    link=`expr "$ls" : '.*-> \(.*\)$'`
+    if expr "$link" : '/.*' > /dev/null; then
+        app_path="$link"
+    else
+        app_path=`dirname "$app_path"`"/$link"
+    fi
+done
+
+APP_HOME=`dirname "$app_path"`
+
+# Absolute path
+APP_HOME=`cd "$APP_HOME" && pwd`
+
+APP_NAME="Gradle"
+APP_BASE_NAME=`basename "$0"`
+
+# Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+
+# Use the maximum available, or set MAX_FD != -1 to use that value.
+MAX_FD=maximum
+
+warn () {
+    echo "$*"
+} >&2
+
+die () {
+    echo
+    echo "$*"
+    echo
+    exit 1
+} >&2
+
+# OS specific support (must be 'true' or 'false').
+cygwin=false
+msys=false
+darwin=false
+nonstop=false
+case "`uname`" in
+  CYGWIN* )
+    cygwin=true
+    ;;
+  Darwin* )
+    darwin=true
+    ;;
+  MINGW* )
+    msys=true
+    ;;
+  NONSTOP* )
+    nonstop=true
+    ;;
+esac
+
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+
+
+# Determine the Java command to use to start the JVM.
+if [ -n "$JAVA_HOME" ] ; then
+    if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
+        # IBM's JDK on AIX uses strange locations for the executables
+        JAVACMD=$JAVA_HOME/jre/sh/java
+    else
+        JAVACMD=$JAVA_HOME/bin/java
+    fi
+    if [ ! -x "$JAVACMD" ] ; then
+        die "ERROR: JAVA_HOME is set to an invalid directory: $JAVA_HOME
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+else
+    JAVACMD=java
+    which java >/dev/null 2>&1 || die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+fi
+
+# Increase the maximum file descriptors if we can.
+if ! "$cygwin" && ! "$darwin" && ! "$nonstop" ; then
+    case $MAX_FD in #(
+      max*)
+        MAX_FD=$( ulimit -H -n ) ||
+            warn "Could not query maximum file descriptor limit"
+    esac
+    case $MAX_FD in  #(
+      '' | soft) :;; #(
+      *)
+        ulimit -n "$MAX_FD" ||
+            warn "Could not set maximum file descriptor limit to $MAX_FD"
+    esac
+fi
+
+# Collect all arguments for the java command, following the shell quoting and substitution rules
+eval set -- "$DEFAULT_JVM_OPTS" "$JAVA_OPTS" "$GRADLE_OPTS" "\"-Dorg.gradle.appname=$APP_BASE_NAME\"" -classpath "\"$CLASSPATH\"" org.gradle.wrapper.GradleWrapperMain "$@"
+
+exec "$JAVACMD" "$@"
+
+
+================================================================================
+FILE: gradlew.bat
+================================================================================
+@rem
+@rem Copyright 2015 the original author or authors.
+@rem
+@rem Licensed under the Apache License, Version 2.0 (the "License");
+@rem you may not use this file except in compliance with the License.
+@rem You may obtain a copy of the License at
+@rem
+@rem      https://www.apache.org/licenses/LICENSE-2.0
+@rem
+@rem Unless required by applicable law or agreed to in writing, software
+@rem distributed under the License is distributed on an "AS IS" BASIS,
+@rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+@rem See the License for the specific language governing permissions and
+@rem limitations under the License.
+@rem
+
+@if "%DEBUG%" == "" @echo off
+@rem ##########################################################################
+@rem
+@rem  Gradle startup script for Windows
+@rem
+@rem ##########################################################################
+
+@rem Set local scope for the variables with windows NT shell
+if "%OS%"=="Windows_NT" setlocal
+
+set DIRNAME=%~dp0
+if "%DIRNAME%" == "" set DIRNAME=.
+set APP_BASE_NAME=%~n0
+set APP_HOME=%DIRNAME%
+
+@rem Resolve any "." and ".." in APP_HOME to make it shorter.
+for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
+
+@rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
+
+@rem Find java.exe
+if defined JAVA_HOME goto findJavaFromJavaHome
+
+set JAVA_EXE=java.exe
+%JAVA_EXE% -version >NUL 2>&1
+if "%ERRORLEVEL%" == "0" goto execute
+
+echo.
+echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+echo.
+echo Please set the JAVA_HOME variable in your environment to match the
+echo location of your Java installation.
+
+goto fail
+
+:findJavaFromJavaHome
+set JAVA_HOME=%JAVA_HOME:"=%
+set JAVA_EXE=%JAVA_HOME%/bin/java.exe
+
+if exist "%JAVA_EXE%" goto execute
+
+echo.
+echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME%
+echo.
+echo Please set the JAVA_HOME variable in your environment to match the
+echo location of your Java installation.
+
+goto fail
+
+:execute
+@rem Setup the command line
+
+set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
+
+@rem Execute Gradle
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*
+
+:end
+@rem End local scope for the variables with windows NT shell
+if "%ERRORLEVEL%"=="0" goto mainEnd
+
+:fail
+rem Set variable GRADLE_EXIT_CONSOLE if you need the _script_ return code instead of
+rem the _cmd.exe /c_ return code!
+if  not "" == "%GRADLE_EXIT_CONSOLE%" exit 1
+exit /b 1
+
+:mainEnd
+if "%OS%"=="Windows_NT" endlocal
+
+:omega
 
 
 ================================================================================
