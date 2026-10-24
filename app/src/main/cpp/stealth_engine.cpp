@@ -88,3 +88,29 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeGetEngineStatus(
 
     return env->NewStringUTF(json.str().c_str());
 }
+
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeApplyPltHooks(
+        JNIEnv* /* env */, jobject /* thiz */) {
+    return (stealth_apply_plt_hooks() == 0) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
+        JNIEnv* env, jobject /* thiz */, jstring fieldName, jstring fieldValue) {
+    if (!fieldName || !fieldValue) return JNI_FALSE;
+    jclass buildClass = env->FindClass("android/os/Build");
+    if (!buildClass) return JNI_FALSE;
+
+    const char* fName = env->GetStringUTFChars(fieldName, nullptr);
+    jfieldID fid = env->GetStaticFieldID(buildClass, fName, "Ljava/lang/String;");
+    env->ReleaseStringUTFChars(fieldName, fName);
+
+    if (!fid) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
+
+    env->SetStaticObjectField(buildClass, fid, fieldValue);
+    return JNI_TRUE;
+}

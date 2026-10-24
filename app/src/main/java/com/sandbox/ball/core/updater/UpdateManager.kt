@@ -39,14 +39,28 @@ object UpdateManager {
             var fileSize = 0L
 
             if (assets != null && assets.size() > 0) {
+                // First pass: prioritize production release APK
                 for (i in 0 until assets.size()) {
                     val asset = assets[i].asJsonObject
                     val name = asset.get("name")?.asString ?: ""
-                    if (name.endsWith(".apk", ignoreCase = true)) {
+                    if (name.contains("release", ignoreCase = true) && name.endsWith(".apk", ignoreCase = true)) {
                         downloadUrl = asset.get("browser_download_url")?.asString ?: ""
                         apkName = name
                         fileSize = asset.get("size")?.asLong ?: 0L
                         break
+                    }
+                }
+                // Second pass fallback: any available APK
+                if (downloadUrl.isEmpty()) {
+                    for (i in 0 until assets.size()) {
+                        val asset = assets[i].asJsonObject
+                        val name = asset.get("name")?.asString ?: ""
+                        if (name.endsWith(".apk", ignoreCase = true)) {
+                            downloadUrl = asset.get("browser_download_url")?.asString ?: ""
+                            apkName = name
+                            fileSize = asset.get("size")?.asLong ?: 0L
+                            break
+                        }
                     }
                 }
             }

@@ -3,10 +3,15 @@
 #include "../utils/log.h"
 
 #include <dlfcn.h>
+#include <link.h>
+#include <elf.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <cstdarg>
 #include <cerrno>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using stealth::vfs::VfsCore;
 
@@ -190,8 +195,163 @@ long hooked_ptrace(int request, pid_t pid, void* addr, void* data) {
     return 0;
 }
 
+#ifdef __LP64__
+  #define STEALTH_ELF_R_SYM(i) ELF64_R_SYM(i)
+#else
+  #define STEALTH_ELF_R_SYM(i) ELF32_R_SYM(i)
+#endif
+
+struct PltHookTarget {
+    const char* symbol_name;
+    void* hook_func;
+    void** orig_func_ptr;
+};
+
+static std::vector<PltHookTarget> get_hook_targets() {
+    return {
+        {"open", reinterpret_cast<void*>(hooked_open), reinterpret_cast<void**>(&g_orig_open)},
+        {"openat", reinterpret_cast<void*>(hooked_openat), reinterpret_cast<void**>(&g_orig_openat)},
+        {"fopen", reinterpret_cast<void*>(hooked_fopen), reinterpret_cast<void**>(&g_orig_fopen)},
+        {"access", reinterpret_cast<void*>(hooked_access), reinterpret_cast<void**>(&g_orig_access)},
+        {"stat", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
+        {"lstat", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
+        {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
+    };
+}
+
+static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void* data) {
+    if (!info || !info->dlpi_name || !data) return 0;
+    const char* lib_name = info->dlpi_name;
+
+    // Skip self and libc/libdl to prevent circular hooks
+    if (strstr(lib_name, "libstealth_engine.so") != nullptr ||
+        strstr(lib_name, "libc.so") != nullptr ||
+        strstr(lib_name, "libdl.so") != nullptr) {
+        return 0;
+    }
+
+    ElfW(Addr) base = info->dlpi_addr;
+    const ElfW(Phdr)* phdr = info->dlpi_phdr;
+    ElfW(Half) phnum = info->dlpi_phnum;
+
+    // Find PT_DYNAMIC
+    const ElfW(Dyn)* dynamic = nullptr;
+    for (ElfW(Half) i = 0; i < phnum; ++i) {
+        if (phdr[i].p_type == PT_DYNAMIC) {
+            dynamic = reinterpret_cast<const ElfW(Dyn)*>(base + phdr[i].p_vaddr);
+            break;
+        }
+    }
+    if (!dynamic) return 0;
+
+    const char* strtab = nullptr;
+    const ElfW(Sym)* symtab = nullptr;
+    const void* jmprel = nullptr;
+    size_t plt_rel_sz = 0;
+    ElfW(Word) plt_rel_type = 0;
+
+    for (const ElfW(Dyn)* d = dynamic; d->d_tag != DT_NULL; ++d) {
+        switch (d->d_tag) {
+            case DT_STRTAB: {
+                ElfW(Addr) ptr = d->d_un.d_ptr;
+                strtab = reinterpret_cast<const char*>(ptr < base ? base + ptr : ptr);
+                break;
+            }
+            case DT_SYMTAB: {
+                ElfW(Addr) ptr = d->d_un.d_ptr;
+                symtab = reinterpret_cast<const ElfW(Sym)*>(ptr < base ? base + ptr : ptr);
+                break;
+            }
+            case DT_JMPREL: {
+                ElfW(Addr) ptr = d->d_un.d_ptr;
+                jmprel = reinterpret_cast<const void*>(ptr < base ? base + ptr : ptr);
+                break;
+            }
+            case DT_PLTRELSZ:
+                plt_rel_sz = d->d_un.d_val;
+                break;
+            case DT_PLTREL:
+                plt_rel_type = d->d_un.d_val;
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (!strtab || !symtab || !jmprel || plt_rel_sz == 0) {
+        return 0;
+    }
+
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) page_size = 4096;
+
+    auto* targets = reinterpret_cast<const std::vector<PltHookTarget>*>(data);
+
+    if (plt_rel_type == DT_RELA) {
+        const auto* rela = reinterpret_cast<const ElfW(Rela)*>(jmprel);
+        size_t count = plt_rel_sz / sizeof(ElfW(Rela));
+        for (size_t i = 0; i < count; ++i) {
+            size_t sym_idx = STEALTH_ELF_R_SYM(rela[i].r_info);
+            const char* name = strtab + symtab[sym_idx].st_name;
+            for (const auto& target : *targets) {
+                if (strcmp(name, target.symbol_name) == 0) {
+                    void** got_entry = reinterpret_cast<void**>(base + rela[i].r_offset);
+                    if (*got_entry != target.hook_func) {
+                        void* page_start = reinterpret_cast<void*>(
+                            reinterpret_cast<uintptr_t>(got_entry) & ~(page_size - 1));
+                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE);
+                        if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+                            *(target.orig_func_ptr) = *got_entry;
+                        }
+                        *got_entry = target.hook_func;
+                        mprotect(page_start, page_size, PROT_READ);
+                        ALOGI("PLT Hooked %s in %s", name, lib_name);
+                    }
+                    break;
+                }
+            }
+        }
+    } else if (plt_rel_type == DT_REL) {
+        const auto* rel = reinterpret_cast<const ElfW(Rel)*>(jmprel);
+        size_t count = plt_rel_sz / sizeof(ElfW(Rel));
+        for (size_t i = 0; i < count; ++i) {
+            size_t sym_idx = STEALTH_ELF_R_SYM(rel[i].r_info);
+            const char* name = strtab + symtab[sym_idx].st_name;
+            for (const auto& target : *targets) {
+                if (strcmp(name, target.symbol_name) == 0) {
+                    void** got_entry = reinterpret_cast<void**>(base + rel[i].r_offset);
+                    if (*got_entry != target.hook_func) {
+                        void* page_start = reinterpret_cast<void*>(
+                            reinterpret_cast<uintptr_t>(got_entry) & ~(page_size - 1));
+                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE);
+                        if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+                            *(target.orig_func_ptr) = *got_entry;
+                        }
+                        *got_entry = target.hook_func;
+                        mprotect(page_start, page_size, PROT_READ);
+                        ALOGI("PLT Hooked %s in %s", name, lib_name);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+int stealth_apply_plt_hooks() {
+    auto targets = get_hook_targets();
+    dl_iterate_phdr(plt_hook_callback, &targets);
+    ALOGI("Stealth Hook Engine: PLT/GOT scan and interception completed.");
+    return 0;
+}
+
 int stealth_install_hooks() {
-    if (g_hooks_installed) return 0;
+    if (g_hooks_installed) {
+        stealth_apply_plt_hooks();
+        return 0;
+    }
 
     void* libc = dlopen("libc.so", RTLD_NOW);
     if (libc) {
@@ -203,6 +363,9 @@ int stealth_install_hooks() {
         g_orig_lstat  = reinterpret_cast<orig_lstat_t>(dlsym(libc, "lstat"));
         g_orig_ptrace = reinterpret_cast<orig_ptrace_t>(dlsym(libc, "ptrace"));
     }
+
+    // Apply PLT/GOT memory table redirection
+    stealth_apply_plt_hooks();
 
     g_hooks_installed = 1;
     ALOGI("Stealth Hook Engine: Libc interception hooks installed.");

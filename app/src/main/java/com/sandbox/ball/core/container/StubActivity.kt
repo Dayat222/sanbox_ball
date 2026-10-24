@@ -5,10 +5,13 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import com.sandbox.ball.R
+import com.sandbox.ball.core.hooks.BinderProxyManager
 import com.sandbox.ball.core.hooks.HookManager
+import com.sandbox.ball.core.spoofer.HardwareProfile
 import com.sandbox.ball.core.spoofer.ProfileManager
 import com.sandbox.ball.ui.view.StealthToast
 import dalvik.system.DexClassLoader
@@ -19,10 +22,13 @@ class StubActivity : Activity() {
     companion object {
         const val EXTRA_PACKAGE_NAME = "extra_target_package"
         const val EXTRA_APK_PATH = "extra_target_apk"
+        private const val TAG = "StubActivity"
     }
 
     private var targetPackage: String? = null
     private var apkPath: String? = null
+    private var containerContext: ContainerContext? = null
+    private var containerClassLoader: DexClassLoader? = null
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -40,7 +46,7 @@ class StubActivity : Activity() {
 
         val activeProfile = ProfileManager.getInstance(this).getActiveProfile()
 
-        txtStatus.text = "SANDBOX CONTAINER ACTIVE"
+        txtStatus.text = "SANDBOX CONTAINER ACTIVE (:container)"
         txtDetails.text = buildString {
             append("Target Package: ").append(targetPackage).append("\n\n")
             append("[VFS ISOLATION]\n")
@@ -53,9 +59,12 @@ class StubActivity : Activity() {
             append("MAC: ").append(activeProfile?.macAddress).append("\n")
             append("WiFi SSID: ").append(activeProfile?.wifiSsid).append("\n\n")
             append("[ANTI-DETECTION PROTOCOLS]\n")
-            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0 (Bypass Anti-Cheat)\n")
-            append("✓ /proc/self/maps: SANITIZED (Hidden from Scanners)\n")
+            append("✓ Native PLT/GOT Syscall Hook: ACTIVE\n")
+            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0\n")
+            append("✓ /proc/self/maps: SANITIZED (Thread-Safe)\n")
             append("✓ /proc/self/status: TracerPid = 0\n")
+            append("✓ Binder IPC Proxy: ACTIVE\n")
+            append("✓ Google Play Store Origin: SPOOFED\n")
             append("✓ Dynamic Package Renaming: ACTIVE\n")
             append("✓ App Visibility Hiding: ENGAGED")
         }
@@ -66,7 +75,7 @@ class StubActivity : Activity() {
                 if (launchIntent != null) {
                     launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(launchIntent)
-                    StealthToast.show(this, "Membuka aplikasi dengan Tameng Stealth...")
+                    StealthToast.show(this, "Aplikasi $pkg berjalan di dalam kontainer terisolasi :container")
                 } else {
                     StealthToast.show(this, "Aplikasi $pkg siap di sandbox")
                 }
@@ -94,16 +103,41 @@ class StubActivity : Activity() {
 
     private fun loadContainerClassLoader() {
         val path = apkPath ?: return
+        val pkg = targetPackage ?: return
         try {
-            val dexOptDir = File(cacheDir, "dexopt").apply { mkdirs() }
-            val nativeLibDir = File(filesDir, "sandbox_vfs/libs").apply { mkdirs() }
-            val classLoader = DexClassLoader(
+            val apkFile = File(path)
+            val vfs = AppContainer.getInstance(this).vfs
+            val appContainerDir = vfs.getAppContainerDir(pkg)
+            val nativeLibDir = File(appContainerDir, "lib").apply { mkdirs() }
+            val dexOptDir = File(cacheDir, "dexopt/$pkg").apply { mkdirs() }
+
+            // Extract native .so libraries from APK (REM-01 Requirement 3)
+            NativeLibExtractor.extractNativeLibs(apkFile, nativeLibDir)
+
+            // Load classes and native libs via DexClassLoader
+            val cl = DexClassLoader(
                 path,
                 dexOptDir.absolutePath,
                 nativeLibDir.absolutePath,
                 classLoader
             )
-            HookManager.getInstance(this).attachTargetPackage(targetPackage ?: "")
-        } catch (_: Exception) {}
+            containerClassLoader = cl
+
+            // Create isolated container context (REM-01 Requirement 1)
+            val dataDir = vfs.getAppDataDir(pkg)
+            containerContext = ContainerContext(this, pkg, dataDir, apkFile, cl)
+
+            // Inject custom Instrumentation (REM-01 Requirement 2)
+            ContainerInstrumentation.inject()
+
+            // Initialize hardware profile & binder proxies
+            val activeProfile = ProfileManager.getInstance(this).getActiveProfile() ?: HardwareProfile()
+            HookManager.getInstance(this).attachTargetPackage(pkg)
+            BinderProxyManager.install(activeProfile, pkg)
+
+            Log.i(TAG, "Container runtime successfully initialized for $pkg with isolated VFS: ${dataDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing container runtime: ${e.message}", e)
+        }
     }
 }

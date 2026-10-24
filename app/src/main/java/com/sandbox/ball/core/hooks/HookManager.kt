@@ -29,6 +29,7 @@ class HookManager private constructor(private val context: Context) {
         SettingsSecureHook.setProfile(profile)
         WifiHook.setProfile(profile)
         BuildPropsHook.apply(profile)
+        BinderProxyManager.install(profile)
 
         if (NativeBridge.isNativeLoaded()) {
             val vfsDir = File(context.filesDir, "sandbox_vfs").absolutePath
@@ -41,6 +42,7 @@ class HookManager private constructor(private val context: Context) {
             NativeBridge.nativeSetVfsEnabled(true)
             NativeBridge.nativeSetAntiDebugEnabled(true)
             NativeBridge.nativeSetMapsFilterEnabled(true)
+            NativeBridge.nativeApplyPltHooks()
         }
 
         Log.i(TAG, "All stealth hooks updated with profile: ${profile.profileName}")
@@ -57,6 +59,7 @@ class HookManager private constructor(private val context: Context) {
                 fakeMac = profile?.macAddress ?: "02:00:00:00:00:00",
                 fakeSerial = profile?.serialNumber ?: "RFCT8934"
             )
+            NativeBridge.nativeApplyPltHooks()
         }
     }
 

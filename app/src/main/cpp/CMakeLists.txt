@@ -20,10 +20,17 @@ add_library(
     hook/syscall_hook.cpp
 )
 
+target_compile_options(stealth_engine PRIVATE
+    -fvisibility=hidden
+    $<$<CONFIG:Release>:-Oz>
+)
+
 find_library(log-lib log)
+find_library(android-lib android)
 
 target_link_libraries(
     stealth_engine
     ${log-lib}
+    ${android-lib}
     dl
 )

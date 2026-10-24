@@ -84,6 +84,7 @@ std::string VfsCore::resolvePath(const char* originalPath) {
         return originalPath ? std::string(originalPath) : "";
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string pathStr(originalPath);
 
     // Special interception for /proc/self/maps or /proc/<pid>/maps
@@ -93,8 +94,6 @@ std::string VfsCore::resolvePath(const char* originalPath) {
             return sanitized;
         }
     }
-
-    std::lock_guard<std::mutex> lock(mutex_);
 
     // Check exact matches
     auto it = exactMappings_.find(pathStr);
@@ -191,7 +190,9 @@ std::string VfsCore::sanitizeMapsFile() {
         return "";
     }
 
-    std::ofstream dst(sanitizedMapsPath_, std::ios::trunc);
+    // Thread-safe atomic output per thread to prevent concurrent race conditions
+    std::string tidPath = sanitizedMapsPath_ + "." + std::to_string(gettid());
+    std::ofstream dst(tidPath, std::ios::trunc);
     if (!dst.is_open()) {
         src.close();
         return "";
@@ -213,7 +214,7 @@ std::string VfsCore::sanitizeMapsFile() {
 
     src.close();
     dst.close();
-    return sanitizedMapsPath_;
+    return tidPath;
 }
 
 std::string VfsCore::getSpoofedStatusFile() {

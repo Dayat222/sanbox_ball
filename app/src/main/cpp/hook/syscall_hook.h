@@ -13,6 +13,7 @@ extern "C" {
 // Hook initialization
 int stealth_install_hooks();
 int stealth_uninstall_hooks();
+int stealth_apply_plt_hooks();
 
 // Anti-debugger bypass status
 void stealth_set_antidebug_enabled(int enabled);

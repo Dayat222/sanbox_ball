@@ -92,6 +92,8 @@ object PackageManagerHook {
         return true
     }
 
+    fun isPackageVisible(packageName: String): Boolean = isPackageAllowed(packageName)
+
     const val PLAY_STORE_PACKAGE = "com.android.vending"
 
     /**

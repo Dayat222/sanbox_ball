@@ -37,4 +37,8 @@ object NativeBridge {
     external fun nativeAddPrefixMapping(virtualPrefix: String, realPrefix: String)
 
     external fun nativeGetEngineStatus(): String
+
+    external fun nativeApplyPltHooks(): Boolean
+
+    external fun nativeSetBuildProp(fieldName: String, fieldValue: String): Boolean
 }
