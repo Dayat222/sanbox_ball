@@ -47,12 +47,17 @@ class ProfileManager(private val context: Context) {
 
     fun setActiveProfile(profile: HardwareProfile) {
         prefs.edit().putString(KEY_ACTIVE_PROFILE, gson.toJson(profile)).apply()
-        // Apply hooks and update native bridge
-        HookManager.getInstance(context).applyProfile(profile)
-        if (NativeBridge.isNativeLoaded()) {
-            val virtualRootDir = File(context.filesDir, "sandbox_vfs").absolutePath
-            NativeBridge.nativeInitEngine(virtualRootDir, "", profile.macAddress, profile.serialNumber)
-        }
+        // If running in container process, update active hooks immediately
+        try {
+            val isContainer = com.sandbox.ball.StealthApplication.instance.getProcessNameCompat().endsWith(":container")
+            if (isContainer) {
+                HookManager.getInstance(context).applyProfile(profile)
+                if (NativeBridge.isNativeLoaded()) {
+                    val virtualRootDir = File(context.filesDir, "sandbox_vfs").absolutePath
+                    NativeBridge.nativeInitEngine(virtualRootDir, "", profile.macAddress, profile.serialNumber)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     fun getSavedProfiles(): List<HardwareProfile> {

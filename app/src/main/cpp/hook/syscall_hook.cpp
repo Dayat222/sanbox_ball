@@ -225,12 +225,16 @@ static std::vector<PltHookTarget> get_hook_targets() {
     };
 }
 
-static bool is_in_relro(uintptr_t addr, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum) {
+static bool is_page_strictly_relro(uintptr_t page_start, size_t page_size, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum) {
+    uintptr_t page_end = page_start + page_size;
     for (ElfW(Half) i = 0; i < phnum; ++i) {
         if (phdr[i].p_type == PT_GNU_RELRO) {
             uintptr_t relro_start = base + phdr[i].p_vaddr;
             uintptr_t relro_end = relro_start + phdr[i].p_memsz;
-            if (addr >= relro_start && addr < relro_end) {
+            // The entire page must be strictly within the PT_GNU_RELRO boundaries.
+            // If the page extends beyond relro_end, it overlaps with writable .data / .bss
+            // and locking it to PROT_READ causes SIGSEGV when that data is written!
+            if (page_start >= relro_start && page_end <= relro_end) {
                 return true;
             }
         }
@@ -242,10 +246,20 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
     if (!info || !info->dlpi_name || !data) return 0;
     const char* lib_name = info->dlpi_name;
 
-    // Skip self and libc/libdl to prevent circular hooks
+    // Skip self, libc, libdl, and core Android system/ART runtime libraries.
+    // Hooking core ART/system libraries causes internal VM deadlocks or fatal aborts!
     if (strstr(lib_name, "libstealth_engine.so") != nullptr ||
         strstr(lib_name, "libc.so") != nullptr ||
-        strstr(lib_name, "libdl.so") != nullptr) {
+        strstr(lib_name, "libdl.so") != nullptr ||
+        strstr(lib_name, "libm.so") != nullptr ||
+        strstr(lib_name, "libart.so") != nullptr ||
+        strstr(lib_name, "libart-compiler.so") != nullptr ||
+        strstr(lib_name, "libopenjdk.so") != nullptr ||
+        strstr(lib_name, "libopenjdkjvm.so") != nullptr ||
+        strstr(lib_name, "libandroid_runtime.so") != nullptr ||
+        strstr(lib_name, "liblog.so") != nullptr ||
+        strstr(lib_name, "libbinder.so") != nullptr ||
+        strstr(lib_name, "libutils.so") != nullptr) {
         return 0;
     }
 
@@ -329,8 +343,8 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
 
-                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
-                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                            // SEC-03: Restore PROT_READ strictly for pages fully inside PT_GNU_RELRO
+                            if (is_page_strictly_relro(reinterpret_cast<uintptr_t>(page_start), page_size, base, phdr, phnum)) {
                                 mprotect(page_start, page_size, PROT_READ);
                             }
                         }
@@ -362,8 +376,8 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
 
-                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
-                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                            // SEC-03: Restore PROT_READ strictly for pages fully inside PT_GNU_RELRO
+                            if (is_page_strictly_relro(reinterpret_cast<uintptr_t>(page_start), page_size, base, phdr, phnum)) {
                                 mprotect(page_start, page_size, PROT_READ);
                             }
                         }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.4.0-release"
+        versionCode = 8
+        versionName = "1.4.1-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

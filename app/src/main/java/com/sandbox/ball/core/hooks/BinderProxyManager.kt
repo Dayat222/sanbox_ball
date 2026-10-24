@@ -310,52 +310,61 @@ object BinderProxyManager {
 
     private class PackageManagerInvocationHandler(private val realObject: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
-            val methodName = method.name
+            try {
+                val methodName = method.name
 
-            // Intercept Play Store installer source (Anti-Shadowban)
-            if (methodName == "getInstallerPackageName") {
-                val pkg = args?.getOrNull(0) as? String ?: ""
-                return PackageManagerHook.getInstallerPackageName(pkg)
-            }
-
-            if (methodName == "getInstallSourceInfo") {
-                return createFakeInstallSourceInfo()
-            }
-
-            // Filter package visibility
-            if (methodName == "getPackageInfo") {
-                val pkgName = args?.getOrNull(0) as? String
-                if (pkgName != null && !PackageManagerHook.isPackageVisible(pkgName)) {
-                    throw android.content.pm.PackageManager.NameNotFoundException("Package hidden by stealth container: $pkgName")
+                // Intercept Play Store installer source (Anti-Shadowban)
+                if (methodName == "getInstallerPackageName") {
+                    val pkg = args?.getOrNull(0) as? String ?: ""
+                    return PackageManagerHook.getInstallerPackageName(pkg)
                 }
-            }
 
-            // Filter package lists
-            if (methodName == "getInstalledPackages") {
-                val raw = invokeReal(realObject, method, args) ?: return null
-                return filterParceledOrList(raw) { list ->
-                    @Suppress("UNCHECKED_CAST")
-                    PackageManagerHook.filterPackageInfoList(list as? List<PackageInfo>)
+                if (methodName == "getInstallSourceInfo") {
+                    val fake = createFakeInstallSourceInfo()
+                    if (fake != null) return fake
+                    return invokeReal(realObject, method, args)
                 }
-            }
 
-            if (methodName == "getInstalledApplications") {
-                val raw = invokeReal(realObject, method, args) ?: return null
-                return filterParceledOrList(raw) { list ->
-                    @Suppress("UNCHECKED_CAST")
-                    PackageManagerHook.filterApplicationInfoList(list as? List<ApplicationInfo>)
+                // Filter package visibility
+                if (methodName == "getPackageInfo") {
+                    val pkgName = args?.getOrNull(0) as? String
+                    if (pkgName != null && !PackageManagerHook.isPackageVisible(pkgName)) {
+                        // In AIDL IPC, returning null signifies package not found.
+                        // Never throw NameNotFoundException directly via reflection!
+                        return null
+                    }
                 }
-            }
 
-            if (methodName == "queryIntentActivities") {
-                val raw = invokeReal(realObject, method, args) ?: return null
-                return filterParceledOrList(raw) { list ->
-                    @Suppress("UNCHECKED_CAST")
-                    PackageManagerHook.filterResolveInfoList(list as? List<ResolveInfo>)
+                // Filter package lists
+                if (methodName == "getInstalledPackages") {
+                    val raw = invokeReal(realObject, method, args) ?: return null
+                    return filterParceledOrList(raw) { list ->
+                        @Suppress("UNCHECKED_CAST")
+                        PackageManagerHook.filterPackageInfoList(list as? List<PackageInfo>)
+                    }
                 }
-            }
 
-            return invokeReal(realObject, method, args)
+                if (methodName == "getInstalledApplications") {
+                    val raw = invokeReal(realObject, method, args) ?: return null
+                    return filterParceledOrList(raw) { list ->
+                        @Suppress("UNCHECKED_CAST")
+                        PackageManagerHook.filterApplicationInfoList(list as? List<ApplicationInfo>)
+                    }
+                }
+
+                if (methodName == "queryIntentActivities") {
+                    val raw = invokeReal(realObject, method, args) ?: return null
+                    return filterParceledOrList(raw) { list ->
+                        @Suppress("UNCHECKED_CAST")
+                        PackageManagerHook.filterResolveInfoList(list as? List<ResolveInfo>)
+                    }
+                }
+
+                return invokeReal(realObject, method, args)
+            } catch (t: Throwable) {
+                Log.w(TAG, "PackageManager proxy fallback on ${method.name}: ${t.message}")
+                return invokeReal(realObject, method, args)
+            }
         }
 
         private fun filterParceledOrList(raw: Any, filterAction: (List<*>) -> List<*>): Any {

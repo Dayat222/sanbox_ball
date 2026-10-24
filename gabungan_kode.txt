@@ -1,7 +1,7 @@
 ﻿================================================================================
 PROJECT: Stealth Sandbox Engine (sanbox_ball)
-VERSION: v1.4.0-release (PRD Security Hardening, Sandbox Escape Mitigation & DevSecOps)
-DATE EXPORTED: 2026-10-24 14:21:54
+VERSION: v1.4.1-release (Crash Guardian, Process Isolation & Anti-Force-Close Stability)
+DATE EXPORTED: 2026-10-24 14:40:33
 TOTAL FILES: 82 tracked files
 ================================================================================
 
@@ -115,8 +115,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.4.0-release"
+        versionCode = 8
+        versionName = "1.4.1-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -588,12 +588,16 @@ static std::vector<PltHookTarget> get_hook_targets() {
     };
 }
 
-static bool is_in_relro(uintptr_t addr, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum) {
+static bool is_page_strictly_relro(uintptr_t page_start, size_t page_size, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum) {
+    uintptr_t page_end = page_start + page_size;
     for (ElfW(Half) i = 0; i < phnum; ++i) {
         if (phdr[i].p_type == PT_GNU_RELRO) {
             uintptr_t relro_start = base + phdr[i].p_vaddr;
             uintptr_t relro_end = relro_start + phdr[i].p_memsz;
-            if (addr >= relro_start && addr < relro_end) {
+            // The entire page must be strictly within the PT_GNU_RELRO boundaries.
+            // If the page extends beyond relro_end, it overlaps with writable .data / .bss
+            // and locking it to PROT_READ causes SIGSEGV when that data is written!
+            if (page_start >= relro_start && page_end <= relro_end) {
                 return true;
             }
         }
@@ -605,10 +609,20 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
     if (!info || !info->dlpi_name || !data) return 0;
     const char* lib_name = info->dlpi_name;
 
-    // Skip self and libc/libdl to prevent circular hooks
+    // Skip self, libc, libdl, and core Android system/ART runtime libraries.
+    // Hooking core ART/system libraries causes internal VM deadlocks or fatal aborts!
     if (strstr(lib_name, "libstealth_engine.so") != nullptr ||
         strstr(lib_name, "libc.so") != nullptr ||
-        strstr(lib_name, "libdl.so") != nullptr) {
+        strstr(lib_name, "libdl.so") != nullptr ||
+        strstr(lib_name, "libm.so") != nullptr ||
+        strstr(lib_name, "libart.so") != nullptr ||
+        strstr(lib_name, "libart-compiler.so") != nullptr ||
+        strstr(lib_name, "libopenjdk.so") != nullptr ||
+        strstr(lib_name, "libopenjdkjvm.so") != nullptr ||
+        strstr(lib_name, "libandroid_runtime.so") != nullptr ||
+        strstr(lib_name, "liblog.so") != nullptr ||
+        strstr(lib_name, "libbinder.so") != nullptr ||
+        strstr(lib_name, "libutils.so") != nullptr) {
         return 0;
     }
 
@@ -692,8 +706,8 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
 
-                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
-                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                            // SEC-03: Restore PROT_READ strictly for pages fully inside PT_GNU_RELRO
+                            if (is_page_strictly_relro(reinterpret_cast<uintptr_t>(page_start), page_size, base, phdr, phnum)) {
                                 mprotect(page_start, page_size, PROT_READ);
                             }
                         }
@@ -725,8 +739,8 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                             );
                             ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
 
-                            // SEC-03: Restore PROT_READ for pages in PT_GNU_RELRO segments
-                            if (is_in_relro(reinterpret_cast<uintptr_t>(got_entry), base, phdr, phnum)) {
+                            // SEC-03: Restore PROT_READ strictly for pages fully inside PT_GNU_RELRO
+                            if (is_page_strictly_relro(reinterpret_cast<uintptr_t>(page_start), page_size, base, phdr, phnum)) {
                                 mprotect(page_start, page_size, PROT_READ);
                             }
                         }
@@ -1179,18 +1193,24 @@ std::string VfsCore::resolvePath(const char* originalPath) {
 
     // SEC-02: Protect host container data directory from sandbox escape!
     // Block target container from reading com.sandbox.ball host data outside virtualRootDir_
-    const std::string hostData1 = "/data/data/com.sandbox.ball";
-    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
-    bool pointsToHost = false;
-    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
-        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
-        pointsToHost = true;
-    }
+    // ONLY enforce when targetPkg_ is set (meaning a guest application is running).
+    if (!targetPkg_.empty()) {
+        const std::string hostData1 = "/data/data/com.sandbox.ball";
+        const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+        bool pointsToHost = false;
+        if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+            (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+            pointsToHost = true;
+        }
 
-    if (pointsToHost) {
-        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
-            ALOGW("VfsCore: Blocked attempted sandbox escape to host path: %s", normPath.c_str());
-            return "/dev/null";
+        if (pointsToHost) {
+            if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+                // Allow host native libraries and runtime cache needed by the container process
+                if (normPath.find("/lib") == std::string::npos && normPath.find("/code_cache") == std::string::npos) {
+                    ALOGW("VfsCore: Blocked attempted sandbox escape to host path: %s", normPath.c_str());
+                    return "/dev/null";
+                }
+            }
         }
     }
 
@@ -1225,12 +1245,16 @@ bool VfsCore::shouldRedirect(const char* originalPath) const {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    const std::string hostData1 = "/data/data/com.sandbox.ball";
-    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
-    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
-        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
-        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
-            return true;
+    if (!targetPkg_.empty()) {
+        const std::string hostData1 = "/data/data/com.sandbox.ball";
+        const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+        if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+            (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+            if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+                if (normPath.find("/lib") == std::string::npos && normPath.find("/code_cache") == std::string::npos) {
+                    return true;
+                }
+            }
         }
     }
 
@@ -1770,7 +1794,8 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
                 Bundle::class.java
             )
             execMethod?.isAccessible = true
-            execMethod?.invoke(base ?: this, who, contextThread, token, target, intent, requestCode, options) as? ActivityResult
+            val targetObj = base ?: return null
+            execMethod?.invoke(targetObj, who, contextThread, token, target, intent, requestCode, options) as? ActivityResult
         } catch (e: Exception) {
             Log.e(TAG, "execStartActivity forward notice: ${e.message}")
             null
@@ -1978,27 +2003,7 @@ class StubActivity : Activity() {
         val activeProfile = ProfileManager.getInstance(this).getActiveProfile()
 
         txtStatus.text = "SANDBOX CONTAINER ACTIVE (:container)"
-        txtDetails.text = buildString {
-            append("Target Package: ").append(targetPackage).append("\n\n")
-            append("[VFS ISOLATION]\n")
-            append("Mounted Root: /data/data/").append(targetPackage).append("\n")
-            append("Real Container: ").append(apkPath).append("\n\n")
-            append("[ACTIVE HARDWARE IDENTITY]\n")
-            append("Device: ").append(activeProfile?.manufacturer).append(" ").append(activeProfile?.model).append("\n")
-            append("IMEI: ").append(activeProfile?.imei).append("\n")
-            append("Android ID: ").append(activeProfile?.androidId).append("\n")
-            append("MAC: ").append(activeProfile?.macAddress).append("\n")
-            append("WiFi SSID: ").append(activeProfile?.wifiSsid).append("\n\n")
-            append("[ANTI-DETECTION PROTOCOLS]\n")
-            append("✓ Native PLT/GOT Syscall Hook: ACTIVE\n")
-            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0\n")
-            append("✓ /proc/self/maps: SANITIZED (Thread-Safe)\n")
-            append("✓ /proc/self/status: TracerPid = 0\n")
-            append("✓ Binder IPC Proxy: ACTIVE\n")
-            append("✓ Google Play Store Origin: SPOOFED\n")
-            append("✓ Dynamic Package Renaming: ACTIVE\n")
-            append("✓ App Visibility Hiding: ENGAGED")
-        }
+        updateContainerDetails(txtDetails, activeProfile)
 
         btnLaunch.setOnClickListener {
             targetPackage?.let { pkg ->
@@ -2041,8 +2046,8 @@ class StubActivity : Activity() {
                     this,
                     "Hardware ID direset ke ${newProfile.model} (IMEI: ${newProfile.imei.take(8)}...)"
                 )
-                // Refresh details
-                onCreate(savedInstanceState)
+                // Refresh details safely without leaking views or recreating activity
+                updateContainerDetails(txtDetails, newProfile)
             }
         }
 
@@ -2051,6 +2056,30 @@ class StubActivity : Activity() {
         }
 
         loadContainerClassLoader()
+    }
+
+    private fun updateContainerDetails(txtDetails: TextView, activeProfile: HardwareProfile?) {
+        txtDetails.text = buildString {
+            append("Target Package: ").append(targetPackage).append("\n\n")
+            append("[VFS ISOLATION]\n")
+            append("Mounted Root: /data/data/").append(targetPackage).append("\n")
+            append("Real Container: ").append(apkPath).append("\n\n")
+            append("[ACTIVE HARDWARE IDENTITY]\n")
+            append("Device: ").append(activeProfile?.manufacturer).append(" ").append(activeProfile?.model).append("\n")
+            append("IMEI: ").append(activeProfile?.imei).append("\n")
+            append("Android ID: ").append(activeProfile?.androidId).append("\n")
+            append("MAC: ").append(activeProfile?.macAddress).append("\n")
+            append("WiFi SSID: ").append(activeProfile?.wifiSsid).append("\n\n")
+            append("[ANTI-DETECTION PROTOCOLS]\n")
+            append("✓ Native PLT/GOT Syscall Hook: ACTIVE\n")
+            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0\n")
+            append("✓ /proc/self/maps: SANITIZED (Thread-Safe)\n")
+            append("✓ /proc/self/status: TracerPid = 0\n")
+            append("✓ Binder IPC Proxy: ACTIVE\n")
+            append("✓ Google Play Store Origin: SPOOFED\n")
+            append("✓ Dynamic Package Renaming: ACTIVE\n")
+            append("✓ App Visibility Hiding: ENGAGED")
+        }
     }
 
     private fun loadContainerClassLoader() {
@@ -2528,52 +2557,61 @@ object BinderProxyManager {
 
     private class PackageManagerInvocationHandler(private val realObject: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
-            val methodName = method.name
+            try {
+                val methodName = method.name
 
-            // Intercept Play Store installer source (Anti-Shadowban)
-            if (methodName == "getInstallerPackageName") {
-                val pkg = args?.getOrNull(0) as? String ?: ""
-                return PackageManagerHook.getInstallerPackageName(pkg)
-            }
-
-            if (methodName == "getInstallSourceInfo") {
-                return createFakeInstallSourceInfo()
-            }
-
-            // Filter package visibility
-            if (methodName == "getPackageInfo") {
-                val pkgName = args?.getOrNull(0) as? String
-                if (pkgName != null && !PackageManagerHook.isPackageVisible(pkgName)) {
-                    throw android.content.pm.PackageManager.NameNotFoundException("Package hidden by stealth container: $pkgName")
+                // Intercept Play Store installer source (Anti-Shadowban)
+                if (methodName == "getInstallerPackageName") {
+                    val pkg = args?.getOrNull(0) as? String ?: ""
+                    return PackageManagerHook.getInstallerPackageName(pkg)
                 }
-            }
 
-            // Filter package lists
-            if (methodName == "getInstalledPackages") {
-                val raw = invokeReal(realObject, method, args) ?: return null
-                return filterParceledOrList(raw) { list ->
-                    @Suppress("UNCHECKED_CAST")
-                    PackageManagerHook.filterPackageInfoList(list as? List<PackageInfo>)
+                if (methodName == "getInstallSourceInfo") {
+                    val fake = createFakeInstallSourceInfo()
+                    if (fake != null) return fake
+                    return invokeReal(realObject, method, args)
                 }
-            }
 
-            if (methodName == "getInstalledApplications") {
-                val raw = invokeReal(realObject, method, args) ?: return null
-                return filterParceledOrList(raw) { list ->
-                    @Suppress("UNCHECKED_CAST")
-                    PackageManagerHook.filterApplicationInfoList(list as? List<ApplicationInfo>)
+                // Filter package visibility
+                if (methodName == "getPackageInfo") {
+                    val pkgName = args?.getOrNull(0) as? String
+                    if (pkgName != null && !PackageManagerHook.isPackageVisible(pkgName)) {
+                        // In AIDL IPC, returning null signifies package not found.
+                        // Never throw NameNotFoundException directly via reflection!
+                        return null
+                    }
                 }
-            }
 
-            if (methodName == "queryIntentActivities") {
-                val raw = invokeReal(realObject, method, args) ?: return null
-                return filterParceledOrList(raw) { list ->
-                    @Suppress("UNCHECKED_CAST")
-                    PackageManagerHook.filterResolveInfoList(list as? List<ResolveInfo>)
+                // Filter package lists
+                if (methodName == "getInstalledPackages") {
+                    val raw = invokeReal(realObject, method, args) ?: return null
+                    return filterParceledOrList(raw) { list ->
+                        @Suppress("UNCHECKED_CAST")
+                        PackageManagerHook.filterPackageInfoList(list as? List<PackageInfo>)
+                    }
                 }
-            }
 
-            return invokeReal(realObject, method, args)
+                if (methodName == "getInstalledApplications") {
+                    val raw = invokeReal(realObject, method, args) ?: return null
+                    return filterParceledOrList(raw) { list ->
+                        @Suppress("UNCHECKED_CAST")
+                        PackageManagerHook.filterApplicationInfoList(list as? List<ApplicationInfo>)
+                    }
+                }
+
+                if (methodName == "queryIntentActivities") {
+                    val raw = invokeReal(realObject, method, args) ?: return null
+                    return filterParceledOrList(raw) { list ->
+                        @Suppress("UNCHECKED_CAST")
+                        PackageManagerHook.filterResolveInfoList(list as? List<ResolveInfo>)
+                    }
+                }
+
+                return invokeReal(realObject, method, args)
+            } catch (t: Throwable) {
+                Log.w(TAG, "PackageManager proxy fallback on ${method.name}: ${t.message}")
+                return invokeReal(realObject, method, args)
+            }
         }
 
         private fun filterParceledOrList(raw: Any, filterAction: (List<*>) -> List<*>): Any {
@@ -2780,7 +2818,7 @@ import android.util.Log
 object PackageManagerHook {
     private const val TAG = "PackageManagerHook"
 
-    // Sensitive packages that must never be visible to target apps
+    // Sensitive packages that must never be visible to target apps running inside container
     private val BLACKLISTED_PACKAGES = setOf(
         "com.sandbox.ball",
         "com.topjohnwu.magisk",
@@ -2802,7 +2840,7 @@ object PackageManagerHook {
     private var targetPackageName: String? = null
     private var isVisibilityHidingEnabled: Boolean = true
 
-    fun setTargetPackage(packageName: String) {
+    fun setTargetPackage(packageName: String?) {
         targetPackageName = packageName
         Log.i(TAG, "PackageManagerHook configured for target package: $packageName")
     }
@@ -2813,7 +2851,7 @@ object PackageManagerHook {
     }
 
     fun filterPackageInfoList(originalList: List<PackageInfo>?): List<PackageInfo> {
-        if (!isVisibilityHidingEnabled || originalList == null) {
+        if (!isVisibilityHidingEnabled || originalList == null || targetPackageName == null) {
             return originalList ?: emptyList()
         }
 
@@ -2830,7 +2868,7 @@ object PackageManagerHook {
     }
 
     fun filterApplicationInfoList(originalList: List<ApplicationInfo>?): List<ApplicationInfo> {
-        if (!isVisibilityHidingEnabled || originalList == null) {
+        if (!isVisibilityHidingEnabled || originalList == null || targetPackageName == null) {
             return originalList ?: emptyList()
         }
 
@@ -2845,7 +2883,7 @@ object PackageManagerHook {
     }
 
     fun filterResolveInfoList(originalList: List<ResolveInfo>?): List<ResolveInfo> {
-        if (!isVisibilityHidingEnabled || originalList == null) {
+        if (!isVisibilityHidingEnabled || originalList == null || targetPackageName == null) {
             return originalList ?: emptyList()
         }
 
@@ -2857,7 +2895,12 @@ object PackageManagerHook {
 
     fun isPackageAllowed(packageName: String): Boolean {
         if (!isVisibilityHidingEnabled) return true
+        if (targetPackageName == null) return true
         if (packageName == targetPackageName) return true
+        if (packageName == "com.sandbox.ball") {
+            // Only hide host sandbox if a guest container app is actively running
+            return targetPackageName == null
+        }
         if (BLACKLISTED_PACKAGES.contains(packageName) || packageName.contains("sandbox")) {
             return false
         }
@@ -2870,10 +2913,11 @@ object PackageManagerHook {
 
     /**
      * Anti-Shadowban feature:
-     * Spoofs the installer source to Google Play Store (com.android.vending).
-     * Prevents games from flagging the installation as untrusted sideload / sandbox.
+     * Spoofs the installer package name so the target app believes
+     * it was legitimately installed directly via the official Google Play Store.
      */
     fun getInstallerPackageName(packageName: String): String {
+        Log.d(TAG, "Spoofing Google Play Store installer source for: $packageName")
         return PLAY_STORE_PACKAGE
     }
 
@@ -3567,12 +3611,17 @@ class ProfileManager(private val context: Context) {
 
     fun setActiveProfile(profile: HardwareProfile) {
         prefs.edit().putString(KEY_ACTIVE_PROFILE, gson.toJson(profile)).apply()
-        // Apply hooks and update native bridge
-        HookManager.getInstance(context).applyProfile(profile)
-        if (NativeBridge.isNativeLoaded()) {
-            val virtualRootDir = File(context.filesDir, "sandbox_vfs").absolutePath
-            NativeBridge.nativeInitEngine(virtualRootDir, "", profile.macAddress, profile.serialNumber)
-        }
+        // If running in container process, update active hooks immediately
+        try {
+            val isContainer = com.sandbox.ball.StealthApplication.instance.getProcessNameCompat().endsWith(":container")
+            if (isContainer) {
+                HookManager.getInstance(context).applyProfile(profile)
+                if (NativeBridge.isNativeLoaded()) {
+                    val virtualRootDir = File(context.filesDir, "sandbox_vfs").absolutePath
+                    NativeBridge.nativeInitEngine(virtualRootDir, "", profile.macAddress, profile.serialNumber)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     fun getSavedProfiles(): List<HardwareProfile> {
@@ -4153,10 +4202,12 @@ FILE: app/src/main/java/com/sandbox/ball/StealthApplication.kt
 package com.sandbox.ball
 
 import android.app.Application
+import android.os.Build
 import android.util.Log
 import com.sandbox.ball.core.hooks.HookManager
 import com.sandbox.ball.core.nativebridge.NativeBridge
 import com.sandbox.ball.core.spoofer.ProfileManager
+import java.io.File
 
 class StealthApplication : Application() {
     companion object {
@@ -4168,22 +4219,62 @@ class StealthApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        Log.i(TAG, "Initializing Stealth Sandbox Engine...")
 
-        // 1. Initialize Profile Manager and load or generate active hardware profile
+        // 1. Install Global Crash Guardian to capture stack traces and prevent silent terminations
+        installCrashGuardian()
+
+        val processName = getProcessNameCompat()
+        Log.i(TAG, "Initializing Stealth Sandbox Engine in process: $processName")
+
+        // 2. Initialize Profile Manager and load active hardware profile
         val profileManager = ProfileManager.getInstance(this)
         val activeProfile = profileManager.getActiveProfile()
 
-        // 2. Initialize Hook Manager and arm all frameworks
-        if (activeProfile != null) {
-            HookManager.getInstance(this).applyProfile(activeProfile)
-        }
-
-        // 3. Log native bridge state
-        if (NativeBridge.isNativeLoaded()) {
-            Log.i(TAG, "Native VFS and Anti-Debug hooker engine engaged successfully")
+        // 3. Process-aware hook activation:
+        // Invasive VFS, PLT/GOT syscall redirection, and Binder proxies are ONLY needed
+        // inside the isolated container process (":container").
+        // The main dashboard process ("com.sandbox.ball") must run unhindered to guarantee UI stability!
+        if (processName.endsWith(":container")) {
+            if (activeProfile != null) {
+                HookManager.getInstance(this).applyProfile(activeProfile)
+            }
+            if (NativeBridge.isNativeLoaded()) {
+                Log.i(TAG, "Native VFS and Anti-Debug hooker engine engaged in :container process")
+            } else {
+                Log.w(TAG, "Native library not loaded in container process; using Java hooks")
+            }
         } else {
-            Log.w(TAG, "Native library not loaded; falling back to Java framework interception")
+            Log.i(TAG, "Main dashboard process running with native Android bindings (Stability Mode)")
+        }
+    }
+
+    private fun installCrashGuardian() {
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                Log.e(TAG, "FATAL UNCAUGHT EXCEPTION on thread ${thread.name}: ${throwable.message}", throwable)
+                val crashFile = File(filesDir, "last_crash.log")
+                crashFile.writeText(buildString {
+                    append("TIMESTAMP: ${java.util.Date()}\n")
+                    append("PROCESS: ${getProcessNameCompat()}\n")
+                    append("THREAD: ${thread.name}\n")
+                    append("EXCEPTION: ${throwable.javaClass.name}: ${throwable.message}\n\n")
+                    append("STACK TRACE:\n")
+                    append(Log.getStackTraceString(throwable))
+                })
+            } catch (_: Exception) {}
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+    }
+
+    fun getProcessNameCompat(): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return Application.getProcessName()
+        }
+        return try {
+            File("/proc/self/cmdline").readText().trim().trim { it <= ' ' || it == '\u0000' }
+        } catch (_: Exception) {
+            packageName
         }
     }
 }
@@ -5164,7 +5255,7 @@ FILE: app/src/main/res/layout/activity_main.xml
                 android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.4.0-release • Periksa Pembaruan"
+                android:text="v1.4.1-release • Periksa Pembaruan"
                 android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -6236,6 +6327,13 @@ class BinderProxyManagerTest {
         assertFalse(PackageManagerHook.isPackageVisible("de.robv.android.xposed.installer"))
         assertFalse(PackageManagerHook.isPackageVisible("com.topjohnwu.magisk"))
         assertFalse(PackageManagerHook.isPackageVisible("com.noshufou.android.su"))
+
+        // Sandbox host package must be hidden from guest game
+        assertFalse(PackageManagerHook.isPackageVisible("com.sandbox.ball"))
+
+        // When no guest app is running (host dashboard mode), host app must be visible to itself
+        PackageManagerHook.setTargetPackage(null)
+        assertTrue(PackageManagerHook.isPackageVisible("com.sandbox.ball"))
     }
 
     @Test

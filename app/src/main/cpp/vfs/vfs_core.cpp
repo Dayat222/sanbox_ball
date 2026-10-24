@@ -155,18 +155,24 @@ std::string VfsCore::resolvePath(const char* originalPath) {
 
     // SEC-02: Protect host container data directory from sandbox escape!
     // Block target container from reading com.sandbox.ball host data outside virtualRootDir_
-    const std::string hostData1 = "/data/data/com.sandbox.ball";
-    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
-    bool pointsToHost = false;
-    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
-        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
-        pointsToHost = true;
-    }
+    // ONLY enforce when targetPkg_ is set (meaning a guest application is running).
+    if (!targetPkg_.empty()) {
+        const std::string hostData1 = "/data/data/com.sandbox.ball";
+        const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+        bool pointsToHost = false;
+        if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+            (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+            pointsToHost = true;
+        }
 
-    if (pointsToHost) {
-        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
-            ALOGW("VfsCore: Blocked attempted sandbox escape to host path: %s", normPath.c_str());
-            return "/dev/null";
+        if (pointsToHost) {
+            if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+                // Allow host native libraries and runtime cache needed by the container process
+                if (normPath.find("/lib") == std::string::npos && normPath.find("/code_cache") == std::string::npos) {
+                    ALOGW("VfsCore: Blocked attempted sandbox escape to host path: %s", normPath.c_str());
+                    return "/dev/null";
+                }
+            }
         }
     }
 
@@ -201,12 +207,16 @@ bool VfsCore::shouldRedirect(const char* originalPath) const {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    const std::string hostData1 = "/data/data/com.sandbox.ball";
-    const std::string hostData2 = "/data/user/0/com.sandbox.ball";
-    if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
-        (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
-        if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
-            return true;
+    if (!targetPkg_.empty()) {
+        const std::string hostData1 = "/data/data/com.sandbox.ball";
+        const std::string hostData2 = "/data/user/0/com.sandbox.ball";
+        if ((normPath.rfind(hostData1, 0) == 0 && (normPath.length() == hostData1.length() || normPath[hostData1.length()] == '/')) ||
+            (normPath.rfind(hostData2, 0) == 0 && (normPath.length() == hostData2.length() || normPath[hostData2.length()] == '/'))) {
+            if (virtualRootDir_.empty() || normPath.rfind(virtualRootDir_, 0) != 0) {
+                if (normPath.find("/lib") == std::string::npos && normPath.find("/code_cache") == std::string::npos) {
+                    return true;
+                }
+            }
         }
     }
 

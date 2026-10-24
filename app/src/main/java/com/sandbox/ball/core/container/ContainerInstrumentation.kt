@@ -90,7 +90,8 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
                 Bundle::class.java
             )
             execMethod?.isAccessible = true
-            execMethod?.invoke(base ?: this, who, contextThread, token, target, intent, requestCode, options) as? ActivityResult
+            val targetObj = base ?: return null
+            execMethod?.invoke(targetObj, who, contextThread, token, target, intent, requestCode, options) as? ActivityResult
         } catch (e: Exception) {
             Log.e(TAG, "execStartActivity forward notice: ${e.message}")
             null

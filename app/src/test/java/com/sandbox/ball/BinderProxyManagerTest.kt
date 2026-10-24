@@ -37,6 +37,13 @@ class BinderProxyManagerTest {
         assertFalse(PackageManagerHook.isPackageVisible("de.robv.android.xposed.installer"))
         assertFalse(PackageManagerHook.isPackageVisible("com.topjohnwu.magisk"))
         assertFalse(PackageManagerHook.isPackageVisible("com.noshufou.android.su"))
+
+        // Sandbox host package must be hidden from guest game
+        assertFalse(PackageManagerHook.isPackageVisible("com.sandbox.ball"))
+
+        // When no guest app is running (host dashboard mode), host app must be visible to itself
+        PackageManagerHook.setTargetPackage(null)
+        assertTrue(PackageManagerHook.isPackageVisible("com.sandbox.ball"))
     }
 
     @Test

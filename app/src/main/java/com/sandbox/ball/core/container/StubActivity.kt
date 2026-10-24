@@ -47,27 +47,7 @@ class StubActivity : Activity() {
         val activeProfile = ProfileManager.getInstance(this).getActiveProfile()
 
         txtStatus.text = "SANDBOX CONTAINER ACTIVE (:container)"
-        txtDetails.text = buildString {
-            append("Target Package: ").append(targetPackage).append("\n\n")
-            append("[VFS ISOLATION]\n")
-            append("Mounted Root: /data/data/").append(targetPackage).append("\n")
-            append("Real Container: ").append(apkPath).append("\n\n")
-            append("[ACTIVE HARDWARE IDENTITY]\n")
-            append("Device: ").append(activeProfile?.manufacturer).append(" ").append(activeProfile?.model).append("\n")
-            append("IMEI: ").append(activeProfile?.imei).append("\n")
-            append("Android ID: ").append(activeProfile?.androidId).append("\n")
-            append("MAC: ").append(activeProfile?.macAddress).append("\n")
-            append("WiFi SSID: ").append(activeProfile?.wifiSsid).append("\n\n")
-            append("[ANTI-DETECTION PROTOCOLS]\n")
-            append("✓ Native PLT/GOT Syscall Hook: ACTIVE\n")
-            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0\n")
-            append("✓ /proc/self/maps: SANITIZED (Thread-Safe)\n")
-            append("✓ /proc/self/status: TracerPid = 0\n")
-            append("✓ Binder IPC Proxy: ACTIVE\n")
-            append("✓ Google Play Store Origin: SPOOFED\n")
-            append("✓ Dynamic Package Renaming: ACTIVE\n")
-            append("✓ App Visibility Hiding: ENGAGED")
-        }
+        updateContainerDetails(txtDetails, activeProfile)
 
         btnLaunch.setOnClickListener {
             targetPackage?.let { pkg ->
@@ -110,8 +90,8 @@ class StubActivity : Activity() {
                     this,
                     "Hardware ID direset ke ${newProfile.model} (IMEI: ${newProfile.imei.take(8)}...)"
                 )
-                // Refresh details
-                onCreate(savedInstanceState)
+                // Refresh details safely without leaking views or recreating activity
+                updateContainerDetails(txtDetails, newProfile)
             }
         }
 
@@ -120,6 +100,30 @@ class StubActivity : Activity() {
         }
 
         loadContainerClassLoader()
+    }
+
+    private fun updateContainerDetails(txtDetails: TextView, activeProfile: HardwareProfile?) {
+        txtDetails.text = buildString {
+            append("Target Package: ").append(targetPackage).append("\n\n")
+            append("[VFS ISOLATION]\n")
+            append("Mounted Root: /data/data/").append(targetPackage).append("\n")
+            append("Real Container: ").append(apkPath).append("\n\n")
+            append("[ACTIVE HARDWARE IDENTITY]\n")
+            append("Device: ").append(activeProfile?.manufacturer).append(" ").append(activeProfile?.model).append("\n")
+            append("IMEI: ").append(activeProfile?.imei).append("\n")
+            append("Android ID: ").append(activeProfile?.androidId).append("\n")
+            append("MAC: ").append(activeProfile?.macAddress).append("\n")
+            append("WiFi SSID: ").append(activeProfile?.wifiSsid).append("\n\n")
+            append("[ANTI-DETECTION PROTOCOLS]\n")
+            append("✓ Native PLT/GOT Syscall Hook: ACTIVE\n")
+            append("✓ ptrace(PTRACE_TRACEME) Hook: FORCED 0\n")
+            append("✓ /proc/self/maps: SANITIZED (Thread-Safe)\n")
+            append("✓ /proc/self/status: TracerPid = 0\n")
+            append("✓ Binder IPC Proxy: ACTIVE\n")
+            append("✓ Google Play Store Origin: SPOOFED\n")
+            append("✓ Dynamic Package Renaming: ACTIVE\n")
+            append("✓ App Visibility Hiding: ENGAGED")
+        }
     }
 
     private fun loadContainerClassLoader() {
