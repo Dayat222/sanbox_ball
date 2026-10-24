@@ -71,13 +71,36 @@ class StubActivity : Activity() {
 
         btnLaunch.setOnClickListener {
             targetPackage?.let { pkg ->
-                val launchIntent = packageManager.getLaunchIntentForPackage(pkg)
-                if (launchIntent != null) {
-                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(launchIntent)
-                    StealthToast.show(this, "Aplikasi $pkg berjalan di dalam kontainer terisolasi :container")
-                } else {
-                    StealthToast.show(this, "Aplikasi $pkg siap di sandbox")
+                val path = apkPath
+                try {
+                    // 1. Resolve main launch activity from container's base.apk directly (FIX-04)
+                    var launchActivityName: String? = null
+                    if (path != null) {
+                        val archiveInfo = packageManager.getPackageArchiveInfo(path, PackageManager.GET_ACTIVITIES)
+                        launchActivityName = archiveInfo?.activities?.firstOrNull()?.name
+                    }
+                    if (launchActivityName == null) {
+                        launchActivityName = packageManager.getLaunchIntentForPackage(pkg)?.component?.className
+                    }
+
+                    if (launchActivityName != null) {
+                        ContainerInstrumentation.activeTargetPackage = pkg
+                        ContainerInstrumentation.activeContainerContext = containerContext
+                        ContainerInstrumentation.activeClassLoader = containerClassLoader
+
+                        val launchIntent = Intent().apply {
+                            setClassName(pkg, launchActivityName)
+                            putExtra(ContainerInstrumentation.EXTRA_REAL_ACTIVITY, launchActivityName)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(launchIntent)
+                        StealthToast.show(this, "Aplikasi $pkg diluncurkan di dalam proses :container")
+                    } else {
+                        StealthToast.show(this, "Aplikasi $pkg siap di sandbox")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed launching container activity: ${e.message}", e)
+                    StealthToast.show(this, "Gagal meluncurkan: ${e.message}")
                 }
             }
         }
@@ -127,8 +150,11 @@ class StubActivity : Activity() {
             val dataDir = vfs.getAppDataDir(pkg)
             containerContext = ContainerContext(this, pkg, dataDir, apkFile, cl)
 
-            // Inject custom Instrumentation (REM-01 Requirement 2)
+            // Inject custom Instrumentation (REM-01 Requirement 2 & FIX-04)
             ContainerInstrumentation.inject()
+            ContainerInstrumentation.activeTargetPackage = pkg
+            ContainerInstrumentation.activeContainerContext = containerContext
+            ContainerInstrumentation.activeClassLoader = cl
 
             // Initialize hardware profile & binder proxies
             val activeProfile = ProfileManager.getInstance(this).getActiveProfile() ?: HardwareProfile()

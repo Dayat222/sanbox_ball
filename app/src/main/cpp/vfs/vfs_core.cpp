@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <fstream>
 #include <sstream>
 #include <cstring>
@@ -39,6 +40,19 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     ensureDirectory(virtualRootDir_);
     std::string fakeDir = virtualRootDir_ + "/fake_sys";
     ensureDirectory(fakeDir);
+
+    // Clean up old temporary proc_maps.* files from previous sessions (FIX-06)
+    DIR* dir = opendir(fakeDir.c_str());
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (strncmp(entry->d_name, "proc_maps", 9) == 0) {
+                std::string filePath = fakeDir + "/" + entry->d_name;
+                unlink(filePath.c_str());
+            }
+        }
+        closedir(dir);
+    }
 
     fakeCpuInfoPath_ = fakeDir + "/cpuinfo";
     fakeVersionPath_ = fakeDir + "/version";
@@ -115,13 +129,13 @@ std::string VfsCore::resolvePath(const char* originalPath) {
 
 bool VfsCore::shouldRedirect(const char* originalPath) const {
     if (!originalPath || !enabled_) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string pathStr(originalPath);
 
     if (mapsFilterEnabled_ && (pathStr == "/proc/self/maps" || pathStr.find("/maps") != std::string::npos)) {
         return true;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
     if (exactMappings_.find(pathStr) != exactMappings_.end()) {
         return true;
     }

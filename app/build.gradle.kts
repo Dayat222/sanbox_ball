@@ -12,8 +12,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.1.0-release"
+        versionCode = 5
+        versionName = "1.2.0-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -38,6 +38,9 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("debug")
+            ndk {
+                debugSymbolLevel = "NONE"
+            }
         }
         debug {
             isMinifyEnabled = false

@@ -16,6 +16,8 @@ static std::string jstringToStdString(JNIEnv* env, jstring jstr) {
     return result;
 }
 
+extern "C" {
+
 JNIEXPORT jboolean JNICALL
 Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeInitEngine(
         JNIEnv* env, jobject /* thiz */,
@@ -114,3 +116,5 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
     env->SetStaticObjectField(buildClass, fid, fieldValue);
     return JNI_TRUE;
 }
+
+} // extern "C"

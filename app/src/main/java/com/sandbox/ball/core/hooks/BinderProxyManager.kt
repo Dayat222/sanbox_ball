@@ -1,7 +1,11 @@
 package com.sandbox.ball.core.hooks
 
 import android.annotation.SuppressLint
-import android.os.Bundle
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.content.pm.ResolveInfo
+import android.net.wifi.WifiInfo
+import android.os.Build
 import android.os.IBinder
 import android.os.IInterface
 import android.util.Log
@@ -76,6 +80,11 @@ object BinderProxyManager {
             // Hook package manager service
             hookServiceBinder(smClass, sCache, "package") { realBinder ->
                 createPackageManagerProxyBinder(realBinder)
+            }
+
+            // Hook wifi service (FIX-05)
+            hookServiceBinder(smClass, sCache, "wifi") { realBinder ->
+                createWifiProxyBinder(realBinder, profile)
             }
 
         } catch (e: Exception) {
@@ -154,6 +163,22 @@ object BinderProxyManager {
         ) as IBinder
     }
 
+    private fun createWifiProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+        return Proxy.newProxyInstance(
+            realBinder.javaClass.classLoader,
+            arrayOf(IBinder::class.java),
+            InvocationHandler { _, method, args ->
+                if (method.name == "queryLocalInterface") {
+                    val descriptor = args?.getOrNull(0) as? String
+                    if (descriptor?.contains("IWifiManager") == true) {
+                        return@InvocationHandler createWifiInterfaceProxy(realBinder, descriptor, profile)
+                    }
+                }
+                invokeReal(realBinder, method, args)
+            }
+        ) as IBinder
+    }
+
     private fun createTelephonyInterfaceProxy(
         realBinder: IBinder,
         descriptor: String,
@@ -214,6 +239,55 @@ object BinderProxyManager {
         )
     }
 
+    private fun createWifiInterfaceProxy(
+        realBinder: IBinder,
+        descriptor: String,
+        profile: HardwareProfile
+    ): Any {
+        val targetInterface = try {
+            Class.forName(descriptor)
+        } catch (_: Exception) {
+            Class.forName("android.net.wifi.IWifiManager")
+        }
+        val realInterface = realBinder.queryLocalInterface(descriptor)
+
+        return Proxy.newProxyInstance(
+            targetInterface.classLoader,
+            arrayOf(targetInterface, IInterface::class.java),
+            InvocationHandler { _, method, args ->
+                when (method.name) {
+                    "getConnectionInfo" -> {
+                        val realInfo = invokeReal(realInterface ?: realBinder, method, args)
+                        if (realInfo is WifiInfo) {
+                            spoofWifiInfo(realInfo, profile)
+                        }
+                        realInfo
+                    }
+                    "getFactoryMacAddresses" -> arrayOf(profile.macAddress)
+                    "asBinder" -> realBinder
+                    else -> invokeReal(realInterface ?: realBinder, method, args)
+                }
+            }
+        )
+    }
+
+    private fun spoofWifiInfo(wifiInfo: WifiInfo, profile: HardwareProfile) {
+        try {
+            val clazz = wifiInfo.javaClass
+            setFieldValue(clazz, wifiInfo, "mMacAddress", profile.macAddress)
+            setFieldValue(clazz, wifiInfo, "mBSSID", profile.wifiBssid)
+            setFieldValue(clazz, wifiInfo, "mIpAddress", WifiHook.getIpAddressInt())
+        } catch (_: Exception) {}
+    }
+
+    private fun setFieldValue(clazz: Class<*>, target: Any, fieldName: String, value: Any) {
+        try {
+            val field = clazz.getDeclaredField(fieldName)
+            field.isAccessible = true
+            field.set(target, value)
+        } catch (_: Exception) {}
+    }
+
     private class PackageManagerInvocationHandler(private val realObject: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
             val methodName = method.name
@@ -224,6 +298,10 @@ object BinderProxyManager {
                 return PackageManagerHook.getInstallerPackageName(pkg)
             }
 
+            if (methodName == "getInstallSourceInfo") {
+                return createFakeInstallSourceInfo()
+            }
+
             // Filter package visibility
             if (methodName == "getPackageInfo") {
                 val pkgName = args?.getOrNull(0) as? String
@@ -232,7 +310,74 @@ object BinderProxyManager {
                 }
             }
 
+            // Filter package lists (FIX-05)
+            if (methodName == "getInstalledPackages") {
+                val raw = invokeReal(realObject, method, args) ?: return null
+                return filterParceledOrList(raw) { list ->
+                    @Suppress("UNCHECKED_CAST")
+                    PackageManagerHook.filterPackageInfoList(list as? List<PackageInfo>)
+                }
+            }
+
+            if (methodName == "getInstalledApplications") {
+                val raw = invokeReal(realObject, method, args) ?: return null
+                return filterParceledOrList(raw) { list ->
+                    @Suppress("UNCHECKED_CAST")
+                    PackageManagerHook.filterApplicationInfoList(list as? List<ApplicationInfo>)
+                }
+            }
+
+            if (methodName == "queryIntentActivities") {
+                val raw = invokeReal(realObject, method, args) ?: return null
+                return filterParceledOrList(raw) { list ->
+                    @Suppress("UNCHECKED_CAST")
+                    PackageManagerHook.filterResolveInfoList(list as? List<ResolveInfo>)
+                }
+            }
+
             return invokeReal(realObject, method, args)
+        }
+
+        private fun filterParceledOrList(raw: Any, filterAction: (List<*>) -> List<*>): Any {
+            return try {
+                val clazz = raw.javaClass
+                if (clazz.name.contains("ParceledListSlice")) {
+                    val getListMethod = clazz.getMethod("getList")
+                    val originalList = getListMethod.invoke(raw) as? List<*> ?: emptyList<Any>()
+                    val filtered = filterAction(originalList)
+                    val constructor = clazz.getConstructor(List::class.java)
+                    constructor.newInstance(filtered)
+                } else if (raw is List<*>) {
+                    filterAction(raw)
+                } else {
+                    raw
+                }
+            } catch (_: Exception) {
+                raw
+            }
+        }
+
+        private fun createFakeInstallSourceInfo(): Any? {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                return try {
+                    val clazz = Class.forName("android.content.pm.InstallSourceInfo")
+                    for (ctor in clazz.declaredConstructors) {
+                        ctor.isAccessible = true
+                        val paramTypes = ctor.parameterTypes
+                        val args = arrayOfNulls<Any>(paramTypes.size)
+                        for (i in paramTypes.indices) {
+                            if (paramTypes[i] == String::class.java) {
+                                args[i] = "com.android.vending"
+                            }
+                        }
+                        return ctor.newInstance(*args)
+                    }
+                    null
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            return null
         }
     }
 

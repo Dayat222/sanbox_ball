@@ -37,6 +37,14 @@ JNIEXPORT jstring JNICALL
 Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeGetEngineStatus(
         JNIEnv* env, jobject thiz);
 
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeApplyPltHooks(
+        JNIEnv* env, jobject thiz);
+
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
+        JNIEnv* env, jobject thiz, jstring fieldName, jstring fieldValue);
+
 #ifdef __cplusplus
 }
 #endif

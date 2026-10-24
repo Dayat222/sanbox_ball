@@ -210,11 +210,16 @@ struct PltHookTarget {
 static std::vector<PltHookTarget> get_hook_targets() {
     return {
         {"open", reinterpret_cast<void*>(hooked_open), reinterpret_cast<void**>(&g_orig_open)},
+        {"open64", reinterpret_cast<void*>(hooked_open), reinterpret_cast<void**>(&g_orig_open)},
         {"openat", reinterpret_cast<void*>(hooked_openat), reinterpret_cast<void**>(&g_orig_openat)},
+        {"openat64", reinterpret_cast<void*>(hooked_openat), reinterpret_cast<void**>(&g_orig_openat)},
         {"fopen", reinterpret_cast<void*>(hooked_fopen), reinterpret_cast<void**>(&g_orig_fopen)},
+        {"fopen64", reinterpret_cast<void*>(hooked_fopen), reinterpret_cast<void**>(&g_orig_fopen)},
         {"access", reinterpret_cast<void*>(hooked_access), reinterpret_cast<void**>(&g_orig_access)},
         {"stat", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
+        {"stat64", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
         {"lstat", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
+        {"lstat64", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
         {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
     };
 }
@@ -299,13 +304,17 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                     if (*got_entry != target.hook_func) {
                         void* page_start = reinterpret_cast<void*>(
                             reinterpret_cast<uintptr_t>(got_entry) & ~(page_size - 1));
-                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE);
-                        if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
-                            *(target.orig_func_ptr) = *got_entry;
+                        if (mprotect(page_start, page_size, PROT_READ | PROT_WRITE) == 0) {
+                            if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+                                *(target.orig_func_ptr) = *got_entry;
+                            }
+                            *got_entry = target.hook_func;
+                            __builtin___clear_cache(
+                                reinterpret_cast<char*>(got_entry),
+                                reinterpret_cast<char*>(got_entry) + sizeof(void*)
+                            );
+                            ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
                         }
-                        *got_entry = target.hook_func;
-                        mprotect(page_start, page_size, PROT_READ);
-                        ALOGI("PLT Hooked %s in %s", name, lib_name);
                     }
                     break;
                 }
@@ -323,13 +332,17 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                     if (*got_entry != target.hook_func) {
                         void* page_start = reinterpret_cast<void*>(
                             reinterpret_cast<uintptr_t>(got_entry) & ~(page_size - 1));
-                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE);
-                        if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
-                            *(target.orig_func_ptr) = *got_entry;
+                        if (mprotect(page_start, page_size, PROT_READ | PROT_WRITE) == 0) {
+                            if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+                                *(target.orig_func_ptr) = *got_entry;
+                            }
+                            *got_entry = target.hook_func;
+                            __builtin___clear_cache(
+                                reinterpret_cast<char*>(got_entry),
+                                reinterpret_cast<char*>(got_entry) + sizeof(void*)
+                            );
+                            ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
                         }
-                        *got_entry = target.hook_func;
-                        mprotect(page_start, page_size, PROT_READ);
-                        ALOGI("PLT Hooked %s in %s", name, lib_name);
                     }
                     break;
                 }

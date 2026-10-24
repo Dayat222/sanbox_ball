@@ -1,7 +1,7 @@
 ﻿================================================================================
 PROJECT: Stealth Sandbox Engine (sanbox_ball)
-VERSION: v1.1.0-release (PRD Architecture Remediation)
-DATE EXPORTED: 2026-10-24 10:21:42
+VERSION: v1.2.0-release (PRD3 Comprehensive Architecture & Native Stability)
+DATE EXPORTED: 2026-10-24 11:12:31
 ================================================================================
 
 ================================================================================
@@ -96,8 +96,8 @@ android {
         applicationId = "com.sandbox.ball"
         minSdk = 21
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.1.0-release"
+        versionCode = 5
+        versionName = "1.2.0-release"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -122,6 +122,9 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("debug")
+            ndk {
+                debugSymbolLevel = "NONE"
+            }
         }
         debug {
             isMinifyEnabled = false
@@ -492,11 +495,16 @@ struct PltHookTarget {
 static std::vector<PltHookTarget> get_hook_targets() {
     return {
         {"open", reinterpret_cast<void*>(hooked_open), reinterpret_cast<void**>(&g_orig_open)},
+        {"open64", reinterpret_cast<void*>(hooked_open), reinterpret_cast<void**>(&g_orig_open)},
         {"openat", reinterpret_cast<void*>(hooked_openat), reinterpret_cast<void**>(&g_orig_openat)},
+        {"openat64", reinterpret_cast<void*>(hooked_openat), reinterpret_cast<void**>(&g_orig_openat)},
         {"fopen", reinterpret_cast<void*>(hooked_fopen), reinterpret_cast<void**>(&g_orig_fopen)},
+        {"fopen64", reinterpret_cast<void*>(hooked_fopen), reinterpret_cast<void**>(&g_orig_fopen)},
         {"access", reinterpret_cast<void*>(hooked_access), reinterpret_cast<void**>(&g_orig_access)},
         {"stat", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
+        {"stat64", reinterpret_cast<void*>(hooked_stat), reinterpret_cast<void**>(&g_orig_stat)},
         {"lstat", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
+        {"lstat64", reinterpret_cast<void*>(hooked_lstat), reinterpret_cast<void**>(&g_orig_lstat)},
         {"ptrace", reinterpret_cast<void*>(hooked_ptrace), reinterpret_cast<void**>(&g_orig_ptrace)}
     };
 }
@@ -581,13 +589,17 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                     if (*got_entry != target.hook_func) {
                         void* page_start = reinterpret_cast<void*>(
                             reinterpret_cast<uintptr_t>(got_entry) & ~(page_size - 1));
-                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE);
-                        if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
-                            *(target.orig_func_ptr) = *got_entry;
+                        if (mprotect(page_start, page_size, PROT_READ | PROT_WRITE) == 0) {
+                            if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+                                *(target.orig_func_ptr) = *got_entry;
+                            }
+                            *got_entry = target.hook_func;
+                            __builtin___clear_cache(
+                                reinterpret_cast<char*>(got_entry),
+                                reinterpret_cast<char*>(got_entry) + sizeof(void*)
+                            );
+                            ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
                         }
-                        *got_entry = target.hook_func;
-                        mprotect(page_start, page_size, PROT_READ);
-                        ALOGI("PLT Hooked %s in %s", name, lib_name);
                     }
                     break;
                 }
@@ -605,13 +617,17 @@ static int plt_hook_callback(struct dl_phdr_info* info, size_t /* size */, void*
                     if (*got_entry != target.hook_func) {
                         void* page_start = reinterpret_cast<void*>(
                             reinterpret_cast<uintptr_t>(got_entry) & ~(page_size - 1));
-                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE);
-                        if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
-                            *(target.orig_func_ptr) = *got_entry;
+                        if (mprotect(page_start, page_size, PROT_READ | PROT_WRITE) == 0) {
+                            if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+                                *(target.orig_func_ptr) = *got_entry;
+                            }
+                            *got_entry = target.hook_func;
+                            __builtin___clear_cache(
+                                reinterpret_cast<char*>(got_entry),
+                                reinterpret_cast<char*>(got_entry) + sizeof(void*)
+                            );
+                            ALOGI("PLT Hooked %s in %s (GOT: %p)", name, lib_name, got_entry);
                         }
-                        *got_entry = target.hook_func;
-                        mprotect(page_start, page_size, PROT_READ);
-                        ALOGI("PLT Hooked %s in %s", name, lib_name);
                     }
                     break;
                 }
@@ -722,6 +738,8 @@ static std::string jstringToStdString(JNIEnv* env, jstring jstr) {
     return result;
 }
 
+extern "C" {
+
 JNIEXPORT jboolean JNICALL
 Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeInitEngine(
         JNIEnv* env, jobject /* thiz */,
@@ -821,6 +839,8 @@ Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
     return JNI_TRUE;
 }
 
+} // extern "C"
+
 
 ================================================================================
 FILE: app\src\main\cpp\stealth_engine.h
@@ -864,6 +884,14 @@ JNIEXPORT jstring JNICALL
 Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeGetEngineStatus(
         JNIEnv* env, jobject thiz);
 
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeApplyPltHooks(
+        JNIEnv* env, jobject thiz);
+
+JNIEXPORT jboolean JNICALL
+Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
+        JNIEnv* env, jobject thiz, jstring fieldName, jstring fieldValue);
+
 #ifdef __cplusplus
 }
 #endif
@@ -899,6 +927,7 @@ FILE: app\src\main\cpp\vfs\vfs_core.cpp
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <fstream>
 #include <sstream>
 #include <cstring>
@@ -933,6 +962,19 @@ void VfsCore::init(const std::string& virtualRootDir, const std::string& targetP
     ensureDirectory(virtualRootDir_);
     std::string fakeDir = virtualRootDir_ + "/fake_sys";
     ensureDirectory(fakeDir);
+
+    // Clean up old temporary proc_maps.* files from previous sessions (FIX-06)
+    DIR* dir = opendir(fakeDir.c_str());
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr) {
+            if (strncmp(entry->d_name, "proc_maps", 9) == 0) {
+                std::string filePath = fakeDir + "/" + entry->d_name;
+                unlink(filePath.c_str());
+            }
+        }
+        closedir(dir);
+    }
 
     fakeCpuInfoPath_ = fakeDir + "/cpuinfo";
     fakeVersionPath_ = fakeDir + "/version";
@@ -1009,13 +1051,13 @@ std::string VfsCore::resolvePath(const char* originalPath) {
 
 bool VfsCore::shouldRedirect(const char* originalPath) const {
     if (!originalPath || !enabled_) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string pathStr(originalPath);
 
     if (mapsFilterEnabled_ && (pathStr == "/proc/self/maps" || pathStr.find("/maps") != std::string::npos)) {
         return true;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
     if (exactMappings_.find(pathStr) != exactMappings_.end()) {
         return true;
     }
@@ -1458,6 +1500,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Instrumentation
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.os.Bundle
 import android.os.IBinder
@@ -1468,16 +1511,23 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
 
     companion object {
         private const val TAG = "ContainerInstrumentation"
-        private var isInjected = false
+        const val EXTRA_REAL_ACTIVITY = "_stealth_real_activity"
+
+        @Volatile
+        private var instance: ContainerInstrumentation? = null
+
+        var activeTargetPackage: String? = null
+        var activeContainerContext: ContainerContext? = null
+        var activeClassLoader: ClassLoader? = null
 
         @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-        fun inject() {
-            if (isInjected) return
-            try {
+        fun inject(): ContainerInstrumentation? {
+            if (instance != null) return instance
+            return try {
                 val activityThreadClass = Class.forName("android.app.ActivityThread")
                 val currentActivityThreadMethod = activityThreadClass.getDeclaredMethod("currentActivityThread")
                 currentActivityThreadMethod.isAccessible = true
-                val currentActivityThread = currentActivityThreadMethod.invoke(null) ?: return
+                val currentActivityThread = currentActivityThreadMethod.invoke(null) ?: return null
 
                 val mInstrumentationField = activityThreadClass.getDeclaredField("mInstrumentation")
                 mInstrumentationField.isAccessible = true
@@ -1486,11 +1536,16 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
                 if (baseInst !is ContainerInstrumentation) {
                     val custom = ContainerInstrumentation(baseInst)
                     mInstrumentationField.set(currentActivityThread, custom)
-                    isInjected = true
+                    instance = custom
                     Log.i(TAG, "ContainerInstrumentation successfully injected into ActivityThread")
+                    custom
+                } else {
+                    instance = baseInst
+                    baseInst
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not inject ContainerInstrumentation: ${e.message}")
+                null
             }
         }
     }
@@ -1506,9 +1561,18 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
         requestCode: Int,
         options: Bundle?
     ): ActivityResult? {
-        Log.d(TAG, "execStartActivity intercepted for intent: ${intent?.action} target: ${intent?.component}")
+        val targetPkg = activeTargetPackage
+        val component = intent?.component
+        val intentPkg = component?.packageName
 
-        // Redirect internal activities if needed or forward to base
+        // If launching target app Activity, wrap it back into container host (FIX-04)
+        if (targetPkg != null && intentPkg == targetPkg && component != null) {
+            val realClassName = component.className
+            intent.putExtra(EXTRA_REAL_ACTIVITY, realClassName)
+            intent.setClass(who ?: (target as Context), StubActivity::class.java)
+            Log.i(TAG, "execStartActivity wrapped: $realClassName into :container process")
+        }
+
         return try {
             val execMethod: Method? = Instrumentation::class.java.getDeclaredMethod(
                 "execStartActivity",
@@ -1523,12 +1587,23 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
             execMethod?.isAccessible = true
             execMethod?.invoke(base ?: this, who, contextThread, token, target, intent, requestCode, options) as? ActivityResult
         } catch (e: Exception) {
-            Log.e(TAG, "execStartActivity forward failed: ${e.message}")
+            Log.e(TAG, "execStartActivity forward notice: ${e.message}")
             null
         }
     }
 
     override fun newActivity(cl: ClassLoader?, className: String?, intent: Intent?): Activity {
+        val realActivity = intent?.getStringExtra(EXTRA_REAL_ACTIVITY)
+        if (!realActivity.isNullOrEmpty() && activeClassLoader != null) {
+            try {
+                val actClass = activeClassLoader!!.loadClass(realActivity)
+                val act = actClass.getDeclaredConstructor().newInstance() as Activity
+                Log.i(TAG, "newActivity loaded target activity: $realActivity via container classloader")
+                return act
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed loading $realActivity via container classloader: ${e.message}")
+            }
+        }
         return try {
             base?.newActivity(cl, className, intent) ?: super.newActivity(cl, className, intent)
         } catch (_: Exception) {
@@ -1537,6 +1612,26 @@ class ContainerInstrumentation(private val base: Instrumentation?) : Instrumenta
     }
 
     override fun callActivityOnCreate(activity: Activity?, icicle: Bundle?) {
+        if (activity != null && activeContainerContext != null && activity !is StubActivity) {
+            try {
+                // Inject ContainerContext as mBase on ContextWrapper
+                val baseField = ContextWrapper::class.java.getDeclaredField("mBase")
+                baseField.isAccessible = true
+                baseField.set(activity, activeContainerContext)
+
+                // Inject Resources on ContextThemeWrapper if present
+                try {
+                    val themeWrapperClass = Class.forName("android.view.ContextThemeWrapper")
+                    val resField = themeWrapperClass.getDeclaredField("mResources")
+                    resField.isAccessible = true
+                    resField.set(activity, activeContainerContext!!.resources)
+                } catch (_: Exception) {}
+
+                Log.d(TAG, "ContainerContext injected into ${activity.javaClass.name}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not inject ContainerContext into activity: ${e.message}")
+            }
+        }
         base?.callActivityOnCreate(activity, icicle) ?: super.callActivityOnCreate(activity, icicle)
     }
 
@@ -1695,13 +1790,36 @@ class StubActivity : Activity() {
 
         btnLaunch.setOnClickListener {
             targetPackage?.let { pkg ->
-                val launchIntent = packageManager.getLaunchIntentForPackage(pkg)
-                if (launchIntent != null) {
-                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(launchIntent)
-                    StealthToast.show(this, "Aplikasi $pkg berjalan di dalam kontainer terisolasi :container")
-                } else {
-                    StealthToast.show(this, "Aplikasi $pkg siap di sandbox")
+                val path = apkPath
+                try {
+                    // 1. Resolve main launch activity from container's base.apk directly (FIX-04)
+                    var launchActivityName: String? = null
+                    if (path != null) {
+                        val archiveInfo = packageManager.getPackageArchiveInfo(path, PackageManager.GET_ACTIVITIES)
+                        launchActivityName = archiveInfo?.activities?.firstOrNull()?.name
+                    }
+                    if (launchActivityName == null) {
+                        launchActivityName = packageManager.getLaunchIntentForPackage(pkg)?.component?.className
+                    }
+
+                    if (launchActivityName != null) {
+                        ContainerInstrumentation.activeTargetPackage = pkg
+                        ContainerInstrumentation.activeContainerContext = containerContext
+                        ContainerInstrumentation.activeClassLoader = containerClassLoader
+
+                        val launchIntent = Intent().apply {
+                            setClassName(pkg, launchActivityName)
+                            putExtra(ContainerInstrumentation.EXTRA_REAL_ACTIVITY, launchActivityName)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(launchIntent)
+                        StealthToast.show(this, "Aplikasi $pkg diluncurkan di dalam proses :container")
+                    } else {
+                        StealthToast.show(this, "Aplikasi $pkg siap di sandbox")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed launching container activity: ${e.message}", e)
+                    StealthToast.show(this, "Gagal meluncurkan: ${e.message}")
                 }
             }
         }
@@ -1751,8 +1869,11 @@ class StubActivity : Activity() {
             val dataDir = vfs.getAppDataDir(pkg)
             containerContext = ContainerContext(this, pkg, dataDir, apkFile, cl)
 
-            // Inject custom Instrumentation (REM-01 Requirement 2)
+            // Inject custom Instrumentation (REM-01 Requirement 2 & FIX-04)
             ContainerInstrumentation.inject()
+            ContainerInstrumentation.activeTargetPackage = pkg
+            ContainerInstrumentation.activeContainerContext = containerContext
+            ContainerInstrumentation.activeClassLoader = cl
 
             // Initialize hardware profile & binder proxies
             val activeProfile = ProfileManager.getInstance(this).getActiveProfile() ?: HardwareProfile()
@@ -1888,7 +2009,11 @@ FILE: app\src\main\java\com\sandbox\ball\core\hooks\BinderProxyManager.kt
 package com.sandbox.ball.core.hooks
 
 import android.annotation.SuppressLint
-import android.os.Bundle
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.content.pm.ResolveInfo
+import android.net.wifi.WifiInfo
+import android.os.Build
 import android.os.IBinder
 import android.os.IInterface
 import android.util.Log
@@ -1963,6 +2088,11 @@ object BinderProxyManager {
             // Hook package manager service
             hookServiceBinder(smClass, sCache, "package") { realBinder ->
                 createPackageManagerProxyBinder(realBinder)
+            }
+
+            // Hook wifi service (FIX-05)
+            hookServiceBinder(smClass, sCache, "wifi") { realBinder ->
+                createWifiProxyBinder(realBinder, profile)
             }
 
         } catch (e: Exception) {
@@ -2041,6 +2171,22 @@ object BinderProxyManager {
         ) as IBinder
     }
 
+    private fun createWifiProxyBinder(realBinder: IBinder, profile: HardwareProfile): IBinder {
+        return Proxy.newProxyInstance(
+            realBinder.javaClass.classLoader,
+            arrayOf(IBinder::class.java),
+            InvocationHandler { _, method, args ->
+                if (method.name == "queryLocalInterface") {
+                    val descriptor = args?.getOrNull(0) as? String
+                    if (descriptor?.contains("IWifiManager") == true) {
+                        return@InvocationHandler createWifiInterfaceProxy(realBinder, descriptor, profile)
+                    }
+                }
+                invokeReal(realBinder, method, args)
+            }
+        ) as IBinder
+    }
+
     private fun createTelephonyInterfaceProxy(
         realBinder: IBinder,
         descriptor: String,
@@ -2101,6 +2247,55 @@ object BinderProxyManager {
         )
     }
 
+    private fun createWifiInterfaceProxy(
+        realBinder: IBinder,
+        descriptor: String,
+        profile: HardwareProfile
+    ): Any {
+        val targetInterface = try {
+            Class.forName(descriptor)
+        } catch (_: Exception) {
+            Class.forName("android.net.wifi.IWifiManager")
+        }
+        val realInterface = realBinder.queryLocalInterface(descriptor)
+
+        return Proxy.newProxyInstance(
+            targetInterface.classLoader,
+            arrayOf(targetInterface, IInterface::class.java),
+            InvocationHandler { _, method, args ->
+                when (method.name) {
+                    "getConnectionInfo" -> {
+                        val realInfo = invokeReal(realInterface ?: realBinder, method, args)
+                        if (realInfo is WifiInfo) {
+                            spoofWifiInfo(realInfo, profile)
+                        }
+                        realInfo
+                    }
+                    "getFactoryMacAddresses" -> arrayOf(profile.macAddress)
+                    "asBinder" -> realBinder
+                    else -> invokeReal(realInterface ?: realBinder, method, args)
+                }
+            }
+        )
+    }
+
+    private fun spoofWifiInfo(wifiInfo: WifiInfo, profile: HardwareProfile) {
+        try {
+            val clazz = wifiInfo.javaClass
+            setFieldValue(clazz, wifiInfo, "mMacAddress", profile.macAddress)
+            setFieldValue(clazz, wifiInfo, "mBSSID", profile.wifiBssid)
+            setFieldValue(clazz, wifiInfo, "mIpAddress", WifiHook.getIpAddressInt())
+        } catch (_: Exception) {}
+    }
+
+    private fun setFieldValue(clazz: Class<*>, target: Any, fieldName: String, value: Any) {
+        try {
+            val field = clazz.getDeclaredField(fieldName)
+            field.isAccessible = true
+            field.set(target, value)
+        } catch (_: Exception) {}
+    }
+
     private class PackageManagerInvocationHandler(private val realObject: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
             val methodName = method.name
@@ -2111,6 +2306,10 @@ object BinderProxyManager {
                 return PackageManagerHook.getInstallerPackageName(pkg)
             }
 
+            if (methodName == "getInstallSourceInfo") {
+                return createFakeInstallSourceInfo()
+            }
+
             // Filter package visibility
             if (methodName == "getPackageInfo") {
                 val pkgName = args?.getOrNull(0) as? String
@@ -2119,7 +2318,74 @@ object BinderProxyManager {
                 }
             }
 
+            // Filter package lists (FIX-05)
+            if (methodName == "getInstalledPackages") {
+                val raw = invokeReal(realObject, method, args) ?: return null
+                return filterParceledOrList(raw) { list ->
+                    @Suppress("UNCHECKED_CAST")
+                    PackageManagerHook.filterPackageInfoList(list as? List<PackageInfo>)
+                }
+            }
+
+            if (methodName == "getInstalledApplications") {
+                val raw = invokeReal(realObject, method, args) ?: return null
+                return filterParceledOrList(raw) { list ->
+                    @Suppress("UNCHECKED_CAST")
+                    PackageManagerHook.filterApplicationInfoList(list as? List<ApplicationInfo>)
+                }
+            }
+
+            if (methodName == "queryIntentActivities") {
+                val raw = invokeReal(realObject, method, args) ?: return null
+                return filterParceledOrList(raw) { list ->
+                    @Suppress("UNCHECKED_CAST")
+                    PackageManagerHook.filterResolveInfoList(list as? List<ResolveInfo>)
+                }
+            }
+
             return invokeReal(realObject, method, args)
+        }
+
+        private fun filterParceledOrList(raw: Any, filterAction: (List<*>) -> List<*>): Any {
+            return try {
+                val clazz = raw.javaClass
+                if (clazz.name.contains("ParceledListSlice")) {
+                    val getListMethod = clazz.getMethod("getList")
+                    val originalList = getListMethod.invoke(raw) as? List<*> ?: emptyList<Any>()
+                    val filtered = filterAction(originalList)
+                    val constructor = clazz.getConstructor(List::class.java)
+                    constructor.newInstance(filtered)
+                } else if (raw is List<*>) {
+                    filterAction(raw)
+                } else {
+                    raw
+                }
+            } catch (_: Exception) {
+                raw
+            }
+        }
+
+        private fun createFakeInstallSourceInfo(): Any? {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                return try {
+                    val clazz = Class.forName("android.content.pm.InstallSourceInfo")
+                    for (ctor in clazz.declaredConstructors) {
+                        ctor.isAccessible = true
+                        val paramTypes = ctor.parameterTypes
+                        val args = arrayOfNulls<Any>(paramTypes.size)
+                        for (i in paramTypes.indices) {
+                            if (paramTypes[i] == String::class.java) {
+                                args[i] = "com.android.vending"
+                            }
+                        }
+                        return ctor.newInstance(*args)
+                    }
+                    null
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            return null
         }
     }
 
@@ -2402,11 +2668,12 @@ object SettingsSecureHook {
 
     fun setProfile(profile: HardwareProfile) {
         activeProfile = profile
+        installInMemoryHook(profile)
         Log.i(TAG, "SettingsSecureHook armed with Android ID: ${profile.androidId}")
     }
 
     /**
-     * Intercepts Settings.Secure.getString calls
+     * Intercepts Settings.Secure.getString calls directly
      */
     fun intercept(name: String, originalValue: String?): String? {
         val profile = activeProfile ?: return originalValue
@@ -2415,6 +2682,43 @@ object SettingsSecureHook {
             "bluetooth_name" -> "${profile.brand.uppercase()} ${profile.model}"
             "device_name" -> profile.model
             else -> originalValue
+        }
+    }
+
+    /**
+     * Injects spoofed values into Settings.Secure's internal static cache (sNameValueCache)
+     * so that Settings.Secure.getString() reads the spoofed values without IPC query.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun installInMemoryHook(profile: HardwareProfile) {
+        try {
+            val secureClass = Class.forName("android.provider.Settings\$Secure")
+            val cacheField = secureClass.declaredFields.firstOrNull {
+                it.name == "sNameValueCache" || it.type.name.contains("NameValueCache")
+            }
+            if (cacheField != null) {
+                cacheField.isAccessible = true
+                val nameValueCache = cacheField.get(null)
+                if (nameValueCache != null) {
+                    val valuesField = nameValueCache.javaClass.declaredFields.firstOrNull {
+                        it.name == "mValues" || Map::class.java.isAssignableFrom(it.type)
+                    }
+                    if (valuesField != null) {
+                        valuesField.isAccessible = true
+                        var map = valuesField.get(nameValueCache) as? MutableMap<String, String>
+                        if (map == null) {
+                            map = HashMap()
+                            valuesField.set(nameValueCache, map)
+                        }
+                        map[Settings.Secure.ANDROID_ID] = profile.androidId
+                        map["bluetooth_name"] = "${profile.brand.uppercase()} ${profile.model}"
+                        map["device_name"] = profile.model
+                        Log.i(TAG, "In-memory Settings.Secure cache hooked with Android ID: ${profile.androidId}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "In-memory hook for Settings.Secure notice: ${e.message}")
         }
     }
 }
@@ -4460,7 +4764,7 @@ FILE: app\src\main\res\layout\activity_main.xml
                 android:id="@+id/txt_app_version_header"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v1.1.0-release • Periksa Pembaruan"
+                android:text="v1.2.0-release • Periksa Pembaruan"
                 android:textColor="@color/stealth_cyan"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -5497,8 +5801,12 @@ FILE: app\src\test\java\com\sandbox\ball\BinderProxyManagerTest.kt
 ================================================================================
 package com.sandbox.ball
 
-import com.sandbox.ball.core.hooks.BinderProxyManager
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.provider.Settings
 import com.sandbox.ball.core.hooks.PackageManagerHook
+import com.sandbox.ball.core.hooks.SettingsSecureHook
+import com.sandbox.ball.core.hooks.WifiHook
 import com.sandbox.ball.core.spoofer.HardwareProfile
 import org.junit.Assert.*
 import org.junit.Test
@@ -5529,6 +5837,60 @@ class BinderProxyManagerTest {
         assertFalse(PackageManagerHook.isPackageVisible("de.robv.android.xposed.installer"))
         assertFalse(PackageManagerHook.isPackageVisible("com.topjohnwu.magisk"))
         assertFalse(PackageManagerHook.isPackageVisible("com.noshufou.android.su"))
+    }
+
+    @Test
+    fun testSettingsSecureIntercept() {
+        val profile = HardwareProfile(androidId = "aabbccddeeff0011", model = "SM-S928B", brand = "samsung")
+        SettingsSecureHook.setProfile(profile)
+
+        val interceptedId = SettingsSecureHook.intercept(Settings.Secure.ANDROID_ID, "original_hardware_id")
+        assertEquals("aabbccddeeff0011", interceptedId)
+
+        val interceptedName = SettingsSecureHook.intercept("device_name", "original_device")
+        assertEquals("SM-S928B", interceptedName)
+    }
+
+    @Test
+    fun testWifiHookSpoofing() {
+        val profile = HardwareProfile(
+            macAddress = "02:11:22:33:44:55",
+            wifiSsid = "Test_WiFi_5G",
+            wifiBssid = "00:11:22:33:44:55",
+            fakeIpAddress = "192.168.1.150"
+        )
+        WifiHook.setProfile(profile)
+
+        assertEquals("02:11:22:33:44:55", WifiHook.getMacAddress())
+        assertEquals("\"Test_WiFi_5G\"", WifiHook.getSSID())
+        assertEquals("00:11:22:33:44:55", WifiHook.getBSSID())
+        assertTrue("IP address integer must be non-zero", WifiHook.getIpAddressInt() != 0)
+    }
+
+    @Test
+    fun testFilterPackageInfoList() {
+        PackageManagerHook.setTargetPackage("com.miniclip.eightballpool")
+
+        val targetPkg = PackageInfo().apply {
+            packageName = "com.miniclip.eightballpool"
+            applicationInfo = ApplicationInfo().apply { flags = 0 }
+        }
+        val systemPkg = PackageInfo().apply {
+            packageName = "com.android.vending"
+            applicationInfo = ApplicationInfo().apply { flags = ApplicationInfo.FLAG_SYSTEM }
+        }
+        val blockedPkg = PackageInfo().apply {
+            packageName = "com.topjohnwu.magisk"
+            applicationInfo = ApplicationInfo().apply { flags = 0 }
+        }
+
+        val originalList = listOf(targetPkg, systemPkg, blockedPkg)
+        val filtered = PackageManagerHook.filterPackageInfoList(originalList)
+
+        assertEquals(2, filtered.size)
+        assertTrue(filtered.any { it.packageName == "com.miniclip.eightballpool" })
+        assertTrue(filtered.any { it.packageName == "com.android.vending" })
+        assertFalse(filtered.any { it.packageName == "com.topjohnwu.magisk" })
     }
 }
 
@@ -5844,6 +6206,210 @@ Agar objek `TelephonyHook`, `WifiHook`, `SettingsSecureHook`, dan `PackageManage
    * Pengujian pembacaan `/proc/self/maps` secara paralel oleh 10 *thread* bersamaan selama 5 detik tidak boleh menghasilkan *crash* (`SIGSEGV`/`SIGABRT`) atau *file descriptor leak*.
 4. **Verifikasi Build Rilis:**
    * GitHub Actions berhasil menghasilkan APK rilis yang telah di-*obfuscate* oleh R8 dan ditandatangani secara valid tanpa menyertakan bendera `FLAG_DEBUGGABLE`.
+
+================================================================================
+FILE: prd3.md
+================================================================================
+# Product Requirements Document (PRD): Perbaikan Komprehensif Arsitektur, Stabilitas Native, & Isolasi Kontainer (v1.2.0)
+
+**Nama Proyek:** Stealth Sandbox Engine (`sanbox_ball`)  
+**Repositori Target:** `github.com/Dayat222/sanbox_ball`  
+**Status Dokumen:** Spesifikasi Teknis Lengkap (Full Remediation Specification)  
+**Versi Basis Audit:** `v1.1.0-release`  
+**Target Rilis:** `v1.2.0-release`  
+**Target Platform:** Android 5.0 (API 21) $\rightarrow$ Android 14 (API 34), Compile SDK 35
+
+---
+
+## 1. Ringkasan Eksekutif & Latar Belakang Masalah
+Pada iterasi `v1.1.0-release`, proyek **Stealth Sandbox Engine** telah berhasil mengimplementasikan struktur dasar *PLT/GOT hooking*, sanitasi berkas `/proc/self/maps` berbasis ID *thread* (`gettid()`), pemalsuan properti `android.os.Build` melalui JNI, serta *pipeline* kompilasi rilis di GitHub Actions.
+
+Namun, hasil audit kode secara menyeluruh terhadap `v1.1.0-release` menemukan **6 masalah teknis kritis** yang menyebabkan aplikasi berisiko gagal dikompilasi (*build failure*), mengalami *crash* saat dijalankan (`UnsatisfiedLinkError` dan `SIGSEGV`), serta gagal mengisolasi aplikasi target di dalam proses `:container`. Dokumen PRD lengkap ini merinci spesifikasi perbaikan tingkat kode untuk setiap komponen agar siap digunakan secara penuh.
+
+---
+
+## 2. Daftar Matriks Masalah & Target Perbaikan (Remediation Matrix)
+
+| Kode ID | Komponen / Berkas Terkait | Masalah Teknis pada v1.1.0 | Solusi Arsitektur pada v1.2.0 | Prioritas |
+| :--- | :--- | :--- | :--- | :--- |
+| **FIX-01** | `app/src/main/cpp/CMakeLists.txt` | Berkas `CMakeLists.txt` belum tersedia di dalam repositori sedangkan `build.gradle.kts` memintanya. | Membuat `CMakeLists.txt` lengkap untuk mengkompilasi `stealth_engine.cpp`, `vfs_core.cpp`, dan `syscall_hook.cpp`. | **Blocker (P0)** |
+| **FIX-02** | `stealth_engine.h` & `stealth_engine.cpp` | Fungsi JNI `nativeApplyPltHooks` dan `nativeSetBuildProp` berada di luar blok `extern "C"`, memicu *C++ Name Mangling* dan `UnsatisfiedLinkError`. | Mendeklarasikan seluruh fungsi JNI di dalam `extern "C"` pada `stealth_engine.h` dan `stealth_engine.cpp`. | **Blocker (P0)** |
+| **FIX-03** | `app/src/main/cpp/hook/syscall_hook.cpp` | Pemanggilan `mprotect(..., PROT_READ)` setelah menimpa `.got.plt` membuat segmen `.data` di halaman memori yang sama kehilangan akses tulis (`SIGSEGV`). | Mengubah izin penguncian kembali menjadi `PROT_READ | PROT_WRITE` serta menyempurnakan resolusi pointer `DT_STRTAB`/`DT_SYMTAB`. | **Kritis (P0)** |
+| **FIX-04** | `StubActivity.kt`, `ContainerInstrumentation.kt`, `ContainerContext.kt` | Tombol *Launch* masih memanggil `startActivity(launchIntent)` standar ke OS utama dan belum memuat `Activity` dari `DexClassLoader` kontainer. | Menginjeksi `ContainerContext` ke `Activity` target dan membajak siklus hidup peluncuran di `ContainerInstrumentation` agar berjalan di dalam proses `:container`. | **Kritis (P0)** |
+| **FIX-05** | `BinderProxyManager.kt`, `SettingsSecureHook.kt`, `WifiHook.kt` | Intersepsi `IPackageManager` belum menyaring daftar paket, serta layanan `wifi` (`IWifiManager`) dan `Settings.Secure` belum terhubung ke *proxy*. | Melengkapi *handler* `IPackageManager`, menambahkan *Binder Proxy* untuk layanan `wifi`, dan memasang intersepsi `Settings.Secure` (`sNameValueCache`). | **Tinggi (P1)** |
+| **FIX-06** | `vfs_core.cpp`, `.gitignore`, `local.properties` | File sementara `proc_maps.<tid>` menumpuk di penyimpanan, dan `local.properties` lokal ikut terunggah ke repositori. | Menambahkan pembersihan berkas `proc_maps.*` saat inisialisasi VFS dan menghapus `local.properties` dari indeks Git. | **Menengah (P2)** |
+
+---
+
+## 3. Spesifikasi Teknis Perbaikan Lapisan Native C++ (NDK)
+
+### 3.1. Pembuatan Konfigurasi Build Native (`FIX-01`)
+* **Lokasi Berkas:** `app/src/main/cpp/CMakeLists.txt`
+* **Spesifikasi:**
+  * Menggunakan `cmake_minimum_required(VERSION 3.22.1)`.
+  * Mendefinisikan pustaka bersama (*shared library*) bernama `stealth_engine`.
+  * Mendaftarkan tiga berkas sumber utama:
+    1. `stealth_engine.cpp`
+    2. `vfs/vfs_core.cpp`
+    3. `hook/syscall_hook.cpp`
+  * Mengatur direktori *header* (`target_include_directories`) untuk `.`, `vfs`, `hook`, dan `utils`.
+  * Menambahkan *compiler flags* `-fvisibility=hidden`, `-Wall`, `-Wextra`, serta `-Oz` untuk meminimalkan ukuran biner dan menyembunyikan simbol internal dari pemindaian tabel simbol.
+  * Menautkan pustaka sistem Android: `android`, `log`, dan `dl`.
+
+### 3.2. Perbaikan Deklarasi Simbol JNI & C++ Name Mangling (`FIX-02`)
+* **Lokasi Berkas:** `app/src/main/cpp/stealth_engine.h` & `app/src/main/cpp/stealth_engine.cpp`
+* **Analisis Akar Masalah:**
+  Pada `v1.1.0`, fungsi `Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeApplyPltHooks` dan `Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp` ditulis di bagian bawah `stealth_engine.cpp` tanpa deklarasi di dalam blok `extern "C"` pada `stealth_engine.h`. Kompiler Clang C++ akan mengubah nama simbol fungsi tersebut menjadi format *mangled* (contoh: `_Z69Java_com_sandbox...`), sehingga mesin virtual ART Android gagal menemukannya saat dipanggil dari `NativeBridge.kt`.
+* **Spesifikasi Perbaikan:**
+  1. Tambahkan deklarasi prototipe kedua fungsi tersebut di dalam blok `extern "C" { ... }` pada `stealth_engine.h`:
+     ```cpp
+     JNIEXPORT jboolean JNICALL
+     Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeApplyPltHooks(
+             JNIEnv* env, jobject thiz);
+
+     JNIEXPORT jboolean JNICALL
+     Java_com_sandbox_ball_core_nativebridge_NativeBridge_nativeSetBuildProp(
+             JNIEnv* env, jobject thiz, jstring fieldName, jstring fieldValue);
+     ```
+  2. Bungkus seluruh implementasi fungsi JNI di dalam `stealth_engine.cpp` dengan blok `extern "C" { ... }` untuk menjamin tidak ada fungsi JNI yang terlewat di masa mendatang.
+
+### 3.3. Perbaikan Proteksi Memori PLT/GOT Hooking (`FIX-03`)
+* **Lokasi Berkas:** `app/src/main/cpp/hook/syscall_hook.cpp`
+* **Analisis Akar Masalah:**
+  1. Setelah mengganti nilai `*got_entry = target.hook_func;`, kode memanggil `mprotect(page_start, page_size, PROT_READ);`. Jika halaman memori (4096 byte) tempat `.got.plt` berada juga memuat variabel global yang dapat ditulis (`.data` atau `.bss`), pencabutan izin `PROT_WRITE` akan memicu `SIGSEGV` (*Segmentation Fault*) seketika saat pustaka menulis ke variabel globalnya.
+  2. Perhitungan alamat tabel simbol pada beberapa arsitektur Android (khususnya Android API 21–23 vs API 24+) dapat memiliki `d->d_un.d_ptr` yang sudah berupa alamat absolut atau masih berupa *offset* relatif terhadap `info->dlpi_addr`.
+* **Spesifikasi Perbaikan:**
+  1. Setelah memodifikasi `*got_entry`, biarkan halaman memori tetap memiliki izin `PROT_READ | PROT_WRITE` atau panggil `__builtin___clear_cache` untuk menyinkronkan *instruction/data cache* CPU:
+     ```cpp
+     if (mprotect(page_start, page_size, PROT_READ | PROT_WRITE) == 0) {
+         if (target.orig_func_ptr && !*(target.orig_func_ptr)) {
+             *(target.orig_func_ptr) = *got_entry;
+         }
+         *got_entry = target.hook_func;
+         __builtin___clear_cache(
+             reinterpret_cast<char*>(got_entry),
+             reinterpret_cast<char*>(got_entry) + sizeof(void*)
+         );
+     }
+     ```
+  2. Tambahkan juga intersepsi untuk simbol fungsi varian 64-bit di Android (`open64`, `openat64`, `fopen64`, `stat64`, `lstat64`) yang diarahkan ke *handler* yang sama, karena NDK modern sering memetakan panggilan file I/O ke varian 64-bit secara otomatis.
+
+### 3.4. Pembersihan Berkas Sementara VFS (`FIX-06`)
+* **Lokasi Berkas:** `app/src/main/cpp/vfs/vfs_core.cpp`
+* **Spesifikasi Perbaikan:**
+  * Pada `VfsCore::init()`, bersihkan seluruh berkas `proc_maps.<tid>` sisa sesi sebelumnya di dalam direktori `fake_sys` menggunakan `opendir`/`readdir`/`unlink` agar penyimpanan tidak penuh setelah penggunaan berulang.
+  * Pada `VfsCore::shouldRedirect()`, pindahkan `std::lock_guard<std::mutex> lock(mutex_);` ke baris paling atas sebelum membaca `mapsFilterEnabled_` agar pembacaan status konsisten di semua *thread*.
+
+---
+
+## 4. Spesifikasi Teknis Perbaikan Container Runtime (`FIX-04`)
+
+### 4.1. Penyempurnaan Injeksi Konteks & Pemuatan Activity (`StubActivity.kt` & `ContainerInstrumentation.kt`)
+* **Analisis Akar Masalah:**
+  Pada `v1.1.0`, ketika tombol `btn_container_launch` ditekan di `StubActivity.kt`, kode memanggil:
+  ```kotlin
+  val launchIntent = packageManager.getLaunchIntentForPackage(pkg)
+  startActivity(launchIntent)
+  ```
+  Karena `ContainerInstrumentation.execStartActivity` hanya meneruskan `intent` tersebut ke `base` tanpa memodifikasi komponen target, sistem operasi Android membuka aplikasi asli di luar kontainer.
+* **Spesifikasi Perbaikan:**
+  1. **Resolusi Activity Utama dari APK Kontainer (`StubActivity.kt`):**
+     * Gunakan `packageManager.getPackageArchiveInfo(apkPath, PackageManager.GET_ACTIVITIES)` untuk membaca daftar `ActivityInfo` langsung dari berkas `base.apk` yang ada di dalam kontainer (`/sandbox_vfs/apps/<pkg>/base.apk`).
+     * Ambil nama kelas `Activity` utama (atau dari `getLaunchIntentForPackage(pkg)?.component?.className`).
+  2. **Peluncuran Internal di Proses `:container`:**
+     * Buat kelas `ContainerHostActivity` (atau gunakan mode *dynamic view hosting* di dalam `StubActivity`) yang berjalan di proses `:container`.
+     * Di dalam `ContainerInstrumentation.kt`:
+       * Simpan referensi ke `ContainerContext`, `DexClassLoader`, dan nama paket target yang sedang aktif.
+       * Saat `execStartActivity` menangkap `Intent` yang menuju ke paket target (`intent.component?.packageName == activeTargetPkg`), simpan nama kelas `Activity` asli ke dalam `intent.putExtra("_stealth_real_activity", realClassName)` dan arahkan komponen `Intent` ke `StubActivity` / `ContainerHostActivity` agar tetap berada di dalam proses `:container`.
+       * Override metode `newActivity(cl: ClassLoader?, className: String?, intent: Intent?)`: jika `intent` memiliki atribut `_stealth_real_activity`, muat kelas `Activity` tersebut menggunakan `containerClassLoader.loadClass(realActivityName).newInstance() as Activity`.
+       * Override metode `callActivityOnCreate(activity: Activity?, icicle: Bundle?)`: sebelum memanggil `super.callActivityOnCreate`, suntikkan `ContainerContext` sebagai `mBase` dari `activity` menggunakan refleksi pada kelas `ContextWrapper` (`mBaseField.set(activity, containerContext)`), serta sesuaikan `mResources` pada `ContextThemeWrapper` agar sumber daya visual (`Resources` & `AssetManager`) milik aplikasi target termuat dengan benar.
+
+---
+
+## 5. Spesifikasi Teknis Perbaikan Lapisan Middleware & Binder IPC (`FIX-05`)
+
+### 5.1. Penyempurnaan `PackageManagerInvocationHandler` (`BinderProxyManager.kt`)
+* **Analisis Akar Masalah:**
+  Saat ini `PackageManagerInvocationHandler` baru mencegat `getInstallerPackageName` dan `getPackageInfo`. Metode `getInstalledPackages`, `getInstalledApplications`, dan `queryIntentActivities` belum disaring menggunakan fungsi yang sudah dibuat di `PackageManagerHook.kt`.
+* **Spesifikasi Perbaikan:**
+  Tambahkan penanganan hasil kembalian (*return value filtering*) pada `PackageManagerInvocationHandler.invoke()`:
+  * Untuk `getInstalledPackages`: jika hasil kembalian dari `invokeReal` berupa `ParceledListSlice` (standar internal Android AIDL), ambil daftar di dalamnya melalui refleksi metode `getList()`, saring menggunakan `PackageManagerHook.filterPackageInfoList()`, lalu bungkus kembali ke dalam konstruktor `ParceledListSlice(filteredList)`. Jika berupa `List<PackageInfo>`, saring langsung.
+  * Untuk `getInstalledApplications`: lakukan hal serupa menggunakan `PackageManagerHook.filterApplicationInfoList()`.
+  * Untuk `queryIntentActivities`: saring hasil menggunakan `PackageManagerHook.filterResolveInfoList()`.
+  * Untuk `getInstallSourceInfo` (Android 11 / API 30+): selain `getInstallerPackageName`, Android 11 ke atas menggunakan `getInstallSourceInfo`. Pastikan metode ini juga mengembalikan objek `InstallSourceInfo` dengan *installing/initiating package name* bernilai `"com.android.vending"`.
+
+### 5.2. Penambahan Intersepsi Layanan Wi-Fi (`BinderProxyManager.kt` & `WifiHook.kt`)
+* **Spesifikasi Perbaikan:**
+  * Di dalam `BinderProxyManager.hookServiceManager()`, tambahkan penyadapan untuk layanan `"wifi"`:
+    ```kotlin
+    hookServiceBinder(smClass, sCache, "wifi") { realBinder ->
+        createWifiProxyBinder(realBinder, profile)
+    }
+    ```
+  * Buat `createWifiInterfaceProxy` untuk antarmuka `android.net.wifi.IWifiManager`:
+    * Saat metode `getConnectionInfo` dipanggil, panggil objek asli terlebih dahulu untuk mendapatkan instance `WifiInfo`, lalu gunakan refleksi pada `WifiInfo` untuk mengubah `mMacAddress` menjadi `WifiHook.getMacAddress()`, `mBSSID` menjadi `WifiHook.getBSSID()`, dan `mIpAddress` menjadi `WifiHook.getIpAddressInt()`.
+    * Saat metode `getFactoryMacAddresses` dipanggil, kembalikan `arrayOf(WifiHook.getMacAddress())`.
+
+### 5.3. Penambahan Intersepsi `Settings.Secure` (`SettingsSecureHook.kt`)
+* **Analisis Akar Masalah:**
+  Metode `SettingsSecureHook.intercept()` belum pernah dipanggil oleh sistem ketika aplikasi target menjalankan `Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)`.
+* **Spesifikasi Perbaikan:**
+  * Tambahkan metode `installInMemoryHook(profile: HardwareProfile)` di dalam `SettingsSecureHook.kt`.
+  * Gunakan refleksi pada kelas `android.provider.Settings$Secure`:
+    1. Ambil *field* statis `sNameValueCache` pada kelas `Settings$Secure`.
+    2. Di dalam objek `NameValueCache` tersebut, akses *field* `mValues` (berupa `HashMap<String, String>` atau `ArrayMap<String, String>`).Jika masih `null`, inisialisasi dengan peta baru, lalu masukkan pasangan kunci-nilai:
+       * `Settings.Secure.ANDROID_ID` $\rightarrow$ `profile.androidId`
+       * `"bluetooth_name"` $\rightarrow$ `"${profile.brand.uppercase()} ${profile.model}"`
+       * `"device_name"` $\rightarrow$ `profile.model`
+    3. Panggil `SettingsSecureHook.installInMemoryHook(profile)` setiap kali `SettingsSecureHook.setProfile(profile)` dijalankan, sehingga setiap pembacaan `Settings.Secure.getString()` langsung mengambil nilai dari *in-memory cache* milik `Settings.Secure` tanpa perlu melakukan kueri IPC ke `SettingsProvider` OS utama.
+
+---
+
+## 6. Spesifikasi DevSecOps, Pembersihan Repositori, & Pengujian (`FIX-06`)
+
+### 6.1. Pembersihan Berkas Konfigurasi Lokal (`.gitignore`)
+* **Masalah:** Berkas `local.properties` yang memuat `sdk.dir=C\:\\Users\\DAY01\\android-sdk` masih terdapat di dalam struktur proyek.
+* **Spesifikasi Perbaikan:**
+  1. Hapus berkas `local.properties` dari repositori.
+  2. Buat atau perbarui berkas `.gitignore` di direktori *root* proyek agar mencakup:
+     ```gitignore
+     *.iml
+     .gradle
+     /local.properties
+     /.idea/
+     .DS_Store
+     /build
+     /captures
+     .externalNativeBuild
+     .cxx
+     app/build/
+     ```
+
+### 6.2. Optimasi Konfigurasi NDK & Gradle (`app/build.gradle.kts`)
+* Pada blok `buildTypes.release`, tambahkan konfigurasi pengupasan simbol *debug* native agar pustaka `libstealth_engine.so` di dalam `app-release.apk` bersih dari metadata fungsi lokal:
+  ```kotlin
+  ndk {
+      debugSymbolLevel = "NONE"
+  }
+  ```
+
+### 6.3. Penambahan Unit Test Verifikasi (`app/src/test/`)
+* Perbarui `BinderProxyManagerTest.kt` dan tambahkan pengujian untuk memastikan:
+  1. `SettingsSecureHook.intercept(Settings.Secure.ANDROID_ID, "real_id")` selalu mengembalikan `androidId` milik `HardwareProfile` aktif.
+  2. `WifiHook.getMacAddress()`, `WifiHook.getBSSID()`, dan `WifiHook.getSSID()` mengembalikan nilai sesuai profil yang dipasang.
+  3. `PackageManagerHook.filterPackageInfoList()` secara akurat membuang paket terlarang (`com.sandbox.ball`, Magisk, Xposed) dan mempertahankan paket aplikasi target.
+
+---
+
+## 7. Daftar Periksa Kriteria Penerimaan (Acceptance Criteria Checklist)
+
+Sebelum merilis tag versi `v1.2.0`, seluruh kriteria berikut wajib terpenuhi:
+- [ ] **AC-01 (Build Native):** Berkas `app/src/main/cpp/CMakeLists.txt` tersedia di repositori dan `./gradlew assembleRelease assembleDebug` berhasil menyelesaikan kompilasi C++ tanpa *error*.
+- [ ] **AC-02 (JNI Linkage):** Seluruh fungsi di `NativeBridge.kt` (`nativeInitEngine`, `nativeApplyPltHooks`, `nativeSetBuildProp`, dll.) memiliki padanan `extern "C"` di `stealth_engine.h` dan `stealth_engine.cpp` serta tidak melempar `UnsatisfiedLinkError`.
+- [ ] **AC-03 (Memory Stability):** Pemanggilan `nativeApplyPltHooks()` menggunakan `mprotect(..., PROT_READ | PROT_WRITE)` dan tidak memicu `SIGSEGV` pada saat aplikasi berjalan.
+- [ ] **AC-04 (Active Hooks):** `SettingsSecureHook` menyuntikkan nilai `android_id` ke `sNameValueCache`, serta `BinderProxyManager` memfilter `getInstalledPackages`, `getInstalledApplications`, `queryIntentActivities`, dan memalsukan informasi `IWifiManager`.
+- [ ] **AC-05 (Container Isolation):** Peluncuran aplikasi dari `StubActivity` menggunakan `ContainerInstrumentation` dan `ContainerContext` di dalam proses `:container`.
+- [ ] **AC-06 (Clean Repo):** Berkas `local.properties` tidak lagi ada di dalam pohon direktori Git.
 
 ================================================================================
 FILE: README.md
